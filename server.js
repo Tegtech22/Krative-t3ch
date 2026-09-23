@@ -190,6 +190,37 @@ app.post("/api/intelligence", async (req,res) => {
     let conversationMemory=[];
     let structuredMemory=[];
     if(pool){
+      // Keep Intelligence memory synchronized with the user's real learning activity.
+      const learningRows=await pool.query(`
+        SELECT c.id,c.title,c.category,c.level,e.enrolled_at,
+          COALESCE((SELECT ROUND(COUNT(lp.lesson_id)::numeric * 100 / NULLIF(COUNT(l.id),0))::int
+                    FROM lessons l LEFT JOIN lesson_progress lp ON lp.lesson_id=l.id AND lp.user_id=$1
+                    WHERE l.course_id=c.id),0) AS progress,
+          COALESCE((SELECT COUNT(*)::int FROM lesson_progress lp JOIN lessons l ON l.id=lp.lesson_id
+                    WHERE lp.user_id=$1 AND l.course_id=c.id),0) AS completed_lessons,
+          COALESCE((SELECT COUNT(*)::int FROM lessons l WHERE l.course_id=c.id),0) AS total_lessons
+        FROM enrollments e JOIN courses c ON c.id=e.course_id
+        WHERE e.user_id=$1 ORDER BY e.enrolled_at DESC,c.id ASC
+      `,[user.id]);
+      for(const course of learningRows.rows){
+        await pool.query(
+          "INSERT INTO intelligence_memory(user_id,memory_type,key,value,source,confidence) VALUES($1,'learning_course',$2,$3,'learning_progress',0.980) ON CONFLICT(user_id,memory_type,key) DO UPDATE SET value=EXCLUDED.value,source='learning_progress',confidence=EXCLUDED.confidence,updated_at=NOW()",
+          [user.id,"course:"+course.id,JSON.stringify({title:course.title,category:course.category,level:course.level,progress:Number(course.progress)||0,completed_lessons:Number(course.completed_lessons)||0,total_lessons:Number(course.total_lessons)||0})]
+        );
+      }
+      const activeLearning=learningRows.rows.map(course=>({
+        course_id:Number(course.id),
+        title:course.title,
+        category:course.category,
+        level:course.level,
+        progress:Number(course.progress)||0,
+        completed_lessons:Number(course.completed_lessons)||0,
+        total_lessons:Number(course.total_lessons)||0
+      }));
+      await pool.query(
+        "INSERT INTO intelligence_memory(user_id,memory_type,key,value,source,confidence) VALUES($1,'learning_summary','current_progress',$2,'learning_progress',0.990) ON CONFLICT(user_id,memory_type,key) DO UPDATE SET value=EXCLUDED.value,source='learning_progress',confidence=EXCLUDED.confidence,updated_at=NOW()",
+        [user.id,JSON.stringify({courses:activeLearning,updated_at:new Date().toISOString()})]
+      );
       const memoryRows=await pool.query("SELECT memory_type,key,value,source,confidence FROM intelligence_memory WHERE user_id=$1 ORDER BY updated_at DESC,id DESC LIMIT 50",[user.id]);
       structuredMemory=memoryRows.rows;
       const {rows}=await pool.query("SELECT role,content FROM intelligence_messages WHERE thread_id=$1 ORDER BY created_at DESC,id DESC LIMIT 12",[threadId]);
