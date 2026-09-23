@@ -46,6 +46,7 @@ async function initDb() {
     CREATE TABLE IF NOT EXISTS posts (id BIGSERIAL PRIMARY KEY,user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,content TEXT NOT NULL,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
     CREATE TABLE IF NOT EXISTS comments (id BIGSERIAL PRIMARY KEY,post_id BIGINT NOT NULL REFERENCES posts(id) ON DELETE CASCADE,user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,content TEXT NOT NULL,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
     CREATE TABLE IF NOT EXISTS connections (id BIGSERIAL PRIMARY KEY,requester_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,receiver_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,status TEXT NOT NULL DEFAULT 'pending',created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),UNIQUE(requester_id,receiver_id));
+    CREATE TABLE IF NOT EXISTS profiles (user_id BIGINT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,bio TEXT NOT NULL DEFAULT '',skills TEXT NOT NULL DEFAULT '',learning_goals TEXT NOT NULL DEFAULT '',updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
   `);
   for (const c of memory.courses) await pool.query("INSERT INTO courses(id,category,title,description,level) VALUES($1,$2,$3,$4,$5) ON CONFLICT (id) DO NOTHING",[c.id,c.category,c.title,c.description,c.level]);
   for (const o of memory.opportunities) await pool.query("INSERT INTO opportunities(id,type,title,category,description) VALUES($1,$2,$3,$4,$5) ON CONFLICT (id) DO NOTHING",[o.id,o.type,o.title,o.category,o.description]);
@@ -84,6 +85,36 @@ app.get("/api/courses", async (_req,res) => {
   const { rows } = await pool.query("SELECT id,category,title,description,level FROM courses ORDER BY id"); res.json(rows);
 });
 
+app.get("/api/me/profile", async (req,res) => {
+  const user=await getAuthUser(req);if(!user)return res.status(401).json({error:"authentication required"});
+  if(!pool)return res.json({user_id:user.id,name:user.name,email:user.email,bio:"",skills:"",learning_goals:""});
+  try{const {rows}=await pool.query("SELECT user_id,bio,skills,learning_goals,updated_at FROM profiles WHERE user_id=$1",[user.id]);res.json({user_id:user.id,name:user.name,email:user.email,...(rows[0]||{bio:"",skills:"",learning_goals:""})});}catch(e){res.status(500).json({error:"unable to load profile"});}
+});
+app.put("/api/me/profile", async (req,res) => {
+  const user=await getAuthUser(req);if(!user)return res.status(401).json({error:"authentication required"});
+  const bio=String(req.body?.bio||"").trim().slice(0,1000),skills=String(req.body?.skills||"").trim().slice(0,500),learningGoals=String(req.body?.learning_goals||"").trim().slice(0,1000);
+  if(!pool)return res.json({ok:true,user_id:user.id,bio,skills,learning_goals:learningGoals});
+  try{const {rows}=await pool.query("INSERT INTO profiles(user_id,bio,skills,learning_goals) VALUES($1,$2,$3,$4) ON CONFLICT(user_id) DO UPDATE SET bio=EXCLUDED.bio,skills=EXCLUDED.skills,learning_goals=EXCLUDED.learning_goals,updated_at=NOW() RETURNING user_id,bio,skills,learning_goals,updated_at",[user.id,bio,skills,learningGoals]);res.json({ok:true,...rows[0]});}catch(e){res.status(500).json({error:"unable to save profile"});}
+});
+app.get("/api/community/users", async (req,res) => {
+  const user=await getAuthUser(req);if(!user)return res.status(401).json({error:"authentication required"});
+  if(!pool)return res.json([]);
+  try{const {rows}=await pool.query("SELECT u.id,u.name,COALESCE(p.bio,'') AS bio,COALESCE(p.skills,'') AS skills FROM users u LEFT JOIN profiles p ON p.user_id=u.id WHERE u.id<>$1 ORDER BY u.created_at DESC LIMIT 50",[user.id]);res.json(rows);}catch(e){res.status(500).json({error:"unable to load members"});}
+});
+app.post("/api/community/connections/:id", async (req,res) => {
+  const user=await getAuthUser(req);if(!user)return res.status(401).json({error:"authentication required"});
+  const receiverId=Number(req.params.id);if(!Number.isInteger(receiverId)||receiverId===user.id)return res.status(400).json({error:"invalid member id"});
+  if(!pool)return res.status(201).json({ok:true,status:"pending"});
+  try{const exists=await pool.query("SELECT id FROM users WHERE id=$1",[receiverId]);if(!exists.rows[0])return res.status(404).json({error:"member not found"});
+    const result=await pool.query("INSERT INTO connections(requester_id,receiver_id) VALUES($1,$2) ON CONFLICT(requester_id,receiver_id) DO NOTHING RETURNING id,status",[user.id,receiverId]);
+    res.status(result.rows[0]?201:200).json({ok:true,requested:!!result.rows[0],status:result.rows[0]?.status||"pending"});
+  }catch(e){res.status(500).json({error:"unable to send connection request"});}
+});
+app.get("/api/me/connections", async (req,res) => {
+  const user=await getAuthUser(req);if(!user)return res.status(401).json({error:"authentication required"});
+  if(!pool)return res.json([]);
+  try{const {rows}=await pool.query("SELECT c.id,c.status,c.requester_id,c.receiver_id,u.name FROM connections c JOIN users u ON u.id=CASE WHEN c.requester_id=$1 THEN c.receiver_id ELSE c.requester_id END WHERE c.requester_id=$1 OR c.receiver_id=$1 ORDER BY c.created_at DESC",[user.id]);res.json(rows);}catch(e){res.status(500).json({error:"unable to load connections"});}
+});
 app.get("/api/community/posts", async (_req,res) => {
   if(!pool)return res.json([]);
   try{const {rows}=await pool.query(`
