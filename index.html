@@ -120,6 +120,14 @@ async function loadApplications(){
     document.getElementById("applicationList").innerHTML=data.length?data.map(a=>'<div class="card" style="margin-top:10px"><span class="tag">'+a.type+'</span><h3>'+a.title+'</h3><p>'+a.category+' · <strong>'+a.status+'</strong></p></div>').join(""):'<div class="empty">You have not applied to an opportunity yet.</div>';
   }catch(e){console.warn("Could not load applications",e);}
 }
+async function startCourse(courseId){
+  if(!authToken){openAuth("login");return;}
+  try{
+    const res=await fetch(API_BASE+"/api/courses/"+courseId+"/enroll",{method:"POST",headers:{Authorization:"Bearer "+authToken}});
+    const data=await res.json();if(!res.ok)throw new Error(data.error||"Unable to enroll");
+    await openLessons(courseId);loadEnrollments();
+  }catch(e){alert(e.message);}
+}
 async function openLessons(courseId){
   if(!authToken){openAuth("login");return;}
   const modal=document.getElementById("lessonModal"),list=document.getElementById("lessonList");
