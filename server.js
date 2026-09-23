@@ -87,6 +87,8 @@ async function initDb() {
     CREATE TABLE IF NOT EXISTS role_audit (id BIGSERIAL PRIMARY KEY,target_user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,old_role TEXT,new_role TEXT NOT NULL,changed_by BIGINT REFERENCES users(id) ON DELETE SET NULL,changed_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
     CREATE TABLE IF NOT EXISTS intelligence_threads (id BIGSERIAL PRIMARY KEY,user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,title TEXT NOT NULL DEFAULT 'Kranova Intelligence',created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
     CREATE TABLE IF NOT EXISTS intelligence_messages (id BIGSERIAL PRIMARY KEY,thread_id BIGINT NOT NULL REFERENCES intelligence_threads(id) ON DELETE CASCADE,role TEXT NOT NULL CHECK(role IN ('user','assistant')),content TEXT NOT NULL,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
+    CREATE TABLE IF NOT EXISTS intelligence_memory (id BIGSERIAL PRIMARY KEY,user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,memory_type TEXT NOT NULL,key TEXT NOT NULL,value TEXT NOT NULL,source TEXT NOT NULL DEFAULT 'conversation',confidence NUMERIC(4,3) NOT NULL DEFAULT 0.800,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),UNIQUE(user_id,memory_type,key));
+    CREATE INDEX IF NOT EXISTS intelligence_memory_user_idx ON intelligence_memory(user_id,updated_at DESC);
     CREATE INDEX IF NOT EXISTS intelligence_threads_user_idx ON intelligence_threads(user_id,updated_at DESC);
     CREATE INDEX IF NOT EXISTS intelligence_messages_thread_idx ON intelligence_messages(thread_id,created_at ASC);
     CREATE INDEX IF NOT EXISTS knowledge_active_idx ON knowledge(active,verified);
@@ -160,7 +162,7 @@ app.get("/api/me/connections", async (req,res) => {
   if(!pool)return res.json([]);
   try{const {rows}=await pool.query("SELECT c.id,c.status,c.requester_id,c.receiver_id,u.name FROM connections c JOIN users u ON u.id=CASE WHEN c.requester_id=$1 THEN c.receiver_id ELSE c.requester_id END WHERE c.requester_id=$1 OR c.receiver_id=$1 ORDER BY c.created_at DESC",[user.id]);res.json(rows);}catch(e){res.status(500).json({error:"unable to load connections"});}
 });
-app.get("/api/intelligence/history", async (req,res) => {
+app.get("/api/intelligence/memory", async (req,res) => {\n  const user=await getAuthUser(req);if(!user)return res.status(401).json({error:"authentication required"});\n  if(!pool)return res.json([]);\n  try{const {rows}=await pool.query("SELECT id,memory_type,key,value,source,confidence,updated_at FROM intelligence_memory WHERE user_id=$1 ORDER BY updated_at DESC,id DESC LIMIT 100",[user.id]);res.json(rows);}catch(e){res.status(500).json({error:"unable to load intelligence memory"});}\n});\n\napp.get("/api/intelligence/history", async (req,res) => {
   const user=await getAuthUser(req);if(!user)return res.status(401).json({error:"authentication required"});
   if(!pool)return res.json({thread_id:null,messages:[]});
   try{
@@ -186,7 +188,10 @@ app.post("/api/intelligence", async (req,res) => {
       if(!threadId)threadId=(await pool.query("INSERT INTO intelligence_threads(user_id,title) VALUES($1,$2) RETURNING id",[user.id,"Kranova Intelligence"])).rows[0].id;
     }
     let conversationMemory=[];
+    let structuredMemory=[];
     if(pool){
+      const memoryRows=await pool.query("SELECT memory_type,key,value,source,confidence FROM intelligence_memory WHERE user_id=$1 ORDER BY updated_at DESC,id DESC LIMIT 50",[user.id]);
+      structuredMemory=memoryRows.rows;
       const {rows}=await pool.query("SELECT role,content FROM intelligence_messages WHERE thread_id=$1 ORDER BY created_at DESC,id DESC LIMIT 12",[threadId]);
       conversationMemory=rows.reverse();
     }
@@ -215,7 +220,7 @@ app.post("/api/intelligence", async (req,res) => {
         }
       }catch(knowledgeError){console.warn("Kranova Knowledge Centre retrieval failed; using verified foundation knowledge:",knowledgeError.message);}
     }
-    const r=await fetch(base+"/api/v1/intelligence",{method:"POST",headers:{"Content-Type":"application/json",Authorization:"Bearer "+key},body:JSON.stringify({input,context:{source:"kranova",user_id:user.id,knowledgeSources,conversationMemory}})});
+    const r=await fetch(base+"/api/v1/intelligence",{method:"POST",headers:{"Content-Type":"application/json",Authorization:"Bearer "+key},body:JSON.stringify({input,context:{source:"kranova",user_id:user.id,knowledgeSources,conversationMemory,structuredMemory}})});
     const data=await r.json().catch(()=>({error:"invalid Core response"}));
     if(!r.ok)return res.status(r.status).json(data);
     let reply="";
@@ -229,6 +234,8 @@ app.post("/api/intelligence", async (req,res) => {
     if(pool){
       await pool.query("INSERT INTO intelligence_messages(thread_id,role,content) VALUES($1,'user',$2),($1,'assistant',$3)",[threadId,input,reply]);
       await pool.query("UPDATE intelligence_threads SET updated_at=NOW() WHERE id=$1",[threadId]);
+      const patterns=[[ /\bmy name is ([a-z][a-z '\-]{1,80})/i,'identity','name'],[ /\bi am learning ([a-z0-9 .,'&\-]{2,100})/i,'learning','current_subject'],[ /\bi(?:'m| am) interested in ([a-z0-9 .,'&\-]{2,100})/i,'interest','topic'],[ /\bmy goal is to ([a-z0-9 .,'&\-]{2,120})/i,'goal','primary_goal'] ];
+      for(const [pattern,type,key] of patterns){const m=input.match(pattern);if(m&&m[1])await pool.query("INSERT INTO intelligence_memory(user_id,memory_type,key,value,source,confidence) VALUES($1,$2,$3,$4,'conversation',0.900) ON CONFLICT(user_id,memory_type,key) DO UPDATE SET value=EXCLUDED.value,source='conversation',confidence=EXCLUDED.confidence,updated_at=NOW()",[user.id,type,key,m[1].trim()]);}
     }
     res.status(200).json({...data,thread_id:threadId});
   }catch(e){console.error("Krative Core request failed:",e);res.status(502).json({error:"unable to reach Krative Core"});}
