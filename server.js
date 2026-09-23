@@ -39,7 +39,7 @@ async function initDb() {
     CREATE TABLE IF NOT EXISTS sessions (token_hash TEXT PRIMARY KEY,user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,expires_at TIMESTAMPTZ NOT NULL,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
     CREATE TABLE IF NOT EXISTS courses (id BIGSERIAL PRIMARY KEY,category TEXT NOT NULL,title TEXT NOT NULL,description TEXT NOT NULL,level TEXT NOT NULL,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
     CREATE TABLE IF NOT EXISTS opportunities (id BIGSERIAL PRIMARY KEY,type TEXT NOT NULL,title TEXT NOT NULL,category TEXT NOT NULL,description TEXT NOT NULL,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
-    CREATE TABLE IF NOT EXISTS enrollments (id BIGSERIAL PRIMARY KEY,user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,course_id BIGINT NOT NULL REFERENCES courses(id) ON DELETE CASCADE,enrolled_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),UNIQUE(user_id,course_id));
+    CREATE TABLE IF NOT EXISTS enrollments (id BIGSERIAL PRIMARY KEY,user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,course_id BIGINT NOT NULL REFERENCES courses(id) ON DELETE CASCADE,enrolled_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),progress INTEGER NOT NULL DEFAULT 0 CHECK(progress BETWEEN 0 AND 100),completed_at TIMESTAMPTZ,UNIQUE(user_id,course_id));
   `);
   for (const c of memory.courses) await pool.query("INSERT INTO courses(id,category,title,description,level) VALUES($1,$2,$3,$4,$5) ON CONFLICT (id) DO NOTHING",[c.id,c.category,c.title,c.description,c.level]);
   for (const o of memory.opportunities) await pool.query("INSERT INTO opportunities(id,type,title,category,description) VALUES($1,$2,$3,$4,$5) ON CONFLICT (id) DO NOTHING",[o.id,o.type,o.title,o.category,o.description]);
@@ -128,13 +128,26 @@ app.post("/api/courses/:id/enroll", async (req,res) => {
   } catch(e) { console.error("Enrollment failed:",e); res.status(500).json({error:"unable to enroll"}); }
 });
 
+app.patch("/api/courses/:id/progress", async (req,res) => {
+  const user = await getAuthUser(req);
+  if (!user) return res.status(401).json({error:"authentication required"});
+  const courseId=Number(req.params.id), progress=Number(req.body && req.body.progress);
+  if (!Number.isInteger(courseId)||!Number.isInteger(progress)||progress<0||progress>100) return res.status(400).json({error:"progress must be an integer from 0 to 100"});
+  if (!pool) return res.json({ok:true,course_id:courseId,progress,completed:progress===100});
+  try {
+    const {rows}=await pool.query("UPDATE enrollments SET progress=$1,completed_at=CASE WHEN $1=100 THEN COALESCE(completed_at,NOW()) ELSE NULL END WHERE user_id=$2 AND course_id=$3 RETURNING course_id,progress,completed_at",[progress,user.id,courseId]);
+    if(!rows[0]) return res.status(404).json({error:"enrollment not found"});
+    res.json({ok:true,...rows[0],completed:rows[0].progress===100});
+  } catch(e){console.error("Progress update failed:",e);res.status(500).json({error:"unable to update progress"});}
+});
+
 app.get("/api/me/enrollments", async (req,res) => {
   const user = await getAuthUser(req);
   if (!user) return res.status(401).json({error:"authentication required"});
   try {
     if (!pool) return res.json([]);
     const {rows}=await pool.query(`
-      SELECT c.id,c.category,c.title,c.description,c.level,e.enrolled_at
+      SELECT c.id,c.category,c.title,c.description,c.level,e.enrolled_at,e.progress,e.completed_at
       FROM enrollments e JOIN courses c ON c.id=e.course_id
       WHERE e.user_id=$1 ORDER BY e.enrolled_at DESC
     `,[user.id]);
