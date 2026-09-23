@@ -25,5 +25,5 @@ app.post('/api/memory',requireAuth,(req,res)=>{const content=typeof(req.body&&re
 app.get('/api/knowledge',requireAuth,(req,res)=>res.json({items:knowledge}));
 app.post('/api/knowledge',requireAuth,(req,res)=>{const title=typeof(req.body&&req.body.title)==='string'?req.body.title.trim():'';const content=typeof(req.body&&req.body.content)==='string'?req.body.content.trim():'';if(!title||!content)return res.status(400).json({error:'Title and content are required.'});const item={id:crypto.randomUUID(),title,content,createdAt:new Date().toISOString()};knowledge.unshift(item);record(req.session,'KNOWLEDGE_WRITE','add_knowledge',{knowledgeId:item.id});res.status(201).json(item)});
 app.get('/api/audit',requireAuth,(req,res)=>res.json({items:audit}));
-app.get('*',(req,res)=>res.sendFile(path.join(__dirname,'public','index.html')));
+app.get(/.*/,(req,res)=>res.sendFile(path.join(__dirname,'public','index.html')));
 app.listen(PORT,'0.0.0.0',()=>console.log('KIA listening on '+PORT));
