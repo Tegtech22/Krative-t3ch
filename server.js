@@ -85,6 +85,10 @@ async function initDb() {
     ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'user';
     CREATE TABLE IF NOT EXISTS knowledge (id BIGSERIAL PRIMARY KEY,knowledge_key TEXT UNIQUE,category TEXT NOT NULL,title TEXT NOT NULL,content TEXT NOT NULL,answer TEXT NOT NULL DEFAULT '',source TEXT NOT NULL DEFAULT '',verified BOOLEAN NOT NULL DEFAULT false,active BOOLEAN NOT NULL DEFAULT true,created_by BIGINT REFERENCES users(id) ON DELETE SET NULL,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
     CREATE TABLE IF NOT EXISTS role_audit (id BIGSERIAL PRIMARY KEY,target_user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,old_role TEXT,new_role TEXT NOT NULL,changed_by BIGINT REFERENCES users(id) ON DELETE SET NULL,changed_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
+    CREATE TABLE IF NOT EXISTS intelligence_threads (id BIGSERIAL PRIMARY KEY,user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,title TEXT NOT NULL DEFAULT 'Kranova Intelligence',created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
+    CREATE TABLE IF NOT EXISTS intelligence_messages (id BIGSERIAL PRIMARY KEY,thread_id BIGINT NOT NULL REFERENCES intelligence_threads(id) ON DELETE CASCADE,role TEXT NOT NULL CHECK(role IN ('user','assistant')),content TEXT NOT NULL,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
+    CREATE INDEX IF NOT EXISTS intelligence_threads_user_idx ON intelligence_threads(user_id,updated_at DESC);
+    CREATE INDEX IF NOT EXISTS intelligence_messages_thread_idx ON intelligence_messages(thread_id,created_at ASC);
     CREATE INDEX IF NOT EXISTS knowledge_active_idx ON knowledge(active,verified);
   `);
   await pool.query("UPDATE users SET role='super_admin' WHERE id=(SELECT id FROM users ORDER BY created_at,id LIMIT 1) AND NOT EXISTS (SELECT 1 FROM users WHERE role IN ('admin','super_admin'))");
@@ -156,76 +160,77 @@ app.get("/api/me/connections", async (req,res) => {
   if(!pool)return res.json([]);
   try{const {rows}=await pool.query("SELECT c.id,c.status,c.requester_id,c.receiver_id,u.name FROM connections c JOIN users u ON u.id=CASE WHEN c.requester_id=$1 THEN c.receiver_id ELSE c.requester_id END WHERE c.requester_id=$1 OR c.receiver_id=$1 ORDER BY c.created_at DESC",[user.id]);res.json(rows);}catch(e){res.status(500).json({error:"unable to load connections"});}
 });
+app.get("/api/intelligence/history", async (req,res) => {
+  const user=await getAuthUser(req);if(!user)return res.status(401).json({error:"authentication required"});
+  if(!pool)return res.json({thread_id:null,messages:[]});
+  try{
+    let thread=(await pool.query("SELECT id FROM intelligence_threads WHERE user_id=$1 ORDER BY updated_at DESC,id DESC LIMIT 1",[user.id])).rows[0];
+    if(!thread)thread=(await pool.query("INSERT INTO intelligence_threads(user_id) VALUES($1) RETURNING id",[user.id])).rows[0];
+    const {rows}=await pool.query("SELECT id,role,content,created_at FROM intelligence_messages WHERE thread_id=$1 ORDER BY created_at ASC,id ASC LIMIT 100",[thread.id]);
+    res.json({thread_id:thread.id,messages:rows});
+  }catch(e){console.error("Intelligence history failed:",e);res.status(500).json({error:"unable to load intelligence history"});}
+});
+
 app.post("/api/intelligence", async (req,res) => {
   const user=await getAuthUser(req);if(!user)return res.status(401).json({error:"authentication required"});
   const base=String(process.env.KRATIVE_CORE_BASE_URL||"").replace(/\/$/,""),key=process.env.KRATIVE_CORE_API_KEY||"";
   if(!base||!key)return res.status(503).json({error:"Krative Core integration is not configured"});
   const input=String(req.body?.input||"").trim();if(!input)return res.status(400).json({error:"input is required"});
   try{
+    let threadId=Number(req.body?.thread_id)||null;
+    if(pool){
+      if(threadId){
+        const owned=await pool.query("SELECT id FROM intelligence_threads WHERE id=$1 AND user_id=$2",[threadId,user.id]);
+        if(!owned.rows[0])threadId=null;
+      }
+      if(!threadId)threadId=(await pool.query("INSERT INTO intelligence_threads(user_id,title) VALUES($1,$2) RETURNING id",[user.id,"Kranova Intelligence"])).rows[0].id;
+    }
+    let conversationMemory=[];
+    if(pool){
+      const {rows}=await pool.query("SELECT role,content FROM intelligence_messages WHERE thread_id=$1 ORDER BY created_at DESC,id DESC LIMIT 12",[threadId]);
+      conversationMemory=rows.reverse();
+    }
     let knowledgeSources=KRANOVA_KNOWLEDGE.filter(k=>k.active!==false).map(k=>({id:k.id,type:k.type,title:k.title,content:k.content,answer:k.answer,confidence:k.confidence||0.95}));
     if(pool){
       try{
         const {rows}=await pool.query("SELECT id,knowledge_key,category,title,content,answer,source,verified,active FROM knowledge WHERE active=true AND verified=true ORDER BY updated_at DESC,id DESC");
         if(rows.length){
-          const normalizeText=value=>String(value||"").toLowerCase().replace(/[^a-z0-9\\s]/g," ").replace(/\\s+/g," ").trim();
+          const normalizeText=value=>String(value||"").toLowerCase().replace(/[^a-z0-9\s]/g," ").replace(/\s+/g," ").trim();
           const stopWords=new Set(["the","and","for","with","what","who","how","why","when","where","is","are","can","does","do","on","in","of","to","a","an","this","that","it","tell","me","about","please"]);
           const queryTokens=normalizeText(input).split(" ").filter(t=>t.length>1&&!stopWords.has(t));
           const queryText=normalizeText(input);
           const scored=rows.map(k=>{
             const title=normalizeText(k.title),category=normalizeText(k.category),content=normalizeText(k.content),answer=normalizeText(k.answer);
-            const titleTokens=new Set(title.split(" ").filter(Boolean));
-            const categoryTokens=new Set(category.split(" ").filter(Boolean));
-            const contentTokens=new Set(content.split(" ").filter(Boolean));
-            const answerTokens=new Set(answer.split(" ").filter(Boolean));
+            const titleTokens=new Set(title.split(" ").filter(Boolean)),categoryTokens=new Set(category.split(" ").filter(Boolean)),contentTokens=new Set(content.split(" ").filter(Boolean)),answerTokens=new Set(answer.split(" ").filter(Boolean));
             let score=0,matched=0;
-            for(const token of queryTokens){
-              let hit=false;
-              if(titleTokens.has(token)){score+=10;hit=true;}
-              if(categoryTokens.has(token)){score+=5;hit=true;}
-              if(contentTokens.has(token)){score+=2;hit=true;}
-              if(answerTokens.has(token)){score+=3;hit=true;}
-              if(hit) matched++;
-            }
-            if(queryTokens.length>1){
-              const phrase=queryTokens.join(" ");
-              if(title.includes(phrase)) score+=24;
-              if(content.includes(phrase)) score+=10;
-              if(answer.includes(phrase)) score+=12;
-            }
-            if(title && queryText.includes(title)) score+=20;
-            const coverage=queryTokens.length ? matched/queryTokens.length : 0;
-            if(coverage===1) score+=12;
-            else if(coverage>=0.5) score+=5;
+            for(const token of queryTokens){let hit=false;if(titleTokens.has(token)){score+=10;hit=true;}if(categoryTokens.has(token)){score+=5;hit=true;}if(contentTokens.has(token)){score+=2;hit=true;}if(answerTokens.has(token)){score+=3;hit=true;}if(hit)matched++;}
+            if(queryTokens.length>1){const phrase=queryTokens.join(" ");if(title.includes(phrase))score+=24;if(content.includes(phrase))score+=10;if(answer.includes(phrase))score+=12;}
+            if(title&&queryText.includes(title))score+=20;
+            const coverage=queryTokens.length?matched/queryTokens.length:0;
+            if(coverage===1)score+=12;else if(coverage>=0.5)score+=5;
             return {k,score,coverage};
           }).sort((a,b)=>b.score-a.score||b.coverage-a.coverage||Number(b.k.id)-Number(a.k.id));
-          const relevant=scored.filter(x=>x.score>0 && (x.coverage>=0.25 || x.score>=12)).slice(0,5);
-          if(relevant.length){
-            knowledgeSources=relevant.map(({k,score,coverage})=>({
-              id:k.knowledge_key||String(k.id),
-              type:k.category||"general",
-              title:k.title,
-              content:k.content,
-              answer:k.answer||k.content,
-              confidence:Math.min(0.99,0.90+Math.min(score,9)*0.01),
-              relevance:Math.round(coverage*100)/100
-            }));
-          } else {
-            knowledgeSources=[];
-          }
-        }      }catch(knowledgeError){
-        console.warn("Kranova Knowledge Centre retrieval failed; using verified foundation knowledge:",knowledgeError.message);
-      }
+          const relevant=scored.filter(x=>x.score>0&&(x.coverage>=0.25||x.score>=12)).slice(0,5);
+          knowledgeSources=relevant.length?relevant.map(({k,score,coverage})=>({id:k.knowledge_key||String(k.id),type:k.category||"general",title:k.title,content:k.content,answer:k.answer||k.content,confidence:Math.min(0.99,0.90+Math.min(score,9)*0.01),relevance:Math.round(coverage*100)/100})):[]; 
+        }
+      }catch(knowledgeError){console.warn("Kranova Knowledge Centre retrieval failed; using verified foundation knowledge:",knowledgeError.message);}
     }
-    const r=await fetch(base+"/api/v1/intelligence",{method:"POST",headers:{"Content-Type":"application/json",Authorization:"Bearer "+key},body:JSON.stringify({
-      input,
-      context:{
-        source:"kranova",
-        user_id:user.id,
-        knowledgeSources
-      }
-    })});
+    const r=await fetch(base+"/api/v1/intelligence",{method:"POST",headers:{"Content-Type":"application/json",Authorization:"Bearer "+key},body:JSON.stringify({input,context:{source:"kranova",user_id:user.id,knowledgeSources,conversationMemory}})});
     const data=await r.json().catch(()=>({error:"invalid Core response"}));
-    res.status(r.status).json(data);
+    if(!r.ok)return res.status(r.status).json(data);
+    let reply="";
+    const result=data.result||data;
+    if(typeof result==="string")reply=result;
+    else if(result&&result.answer&&typeof result.answer.text==="string")reply=result.answer.text;
+    else if(result&&typeof result.output==="string")reply=result.output;
+    else if(result&&typeof result.response==="string")reply=result.response;
+    else if(result&&typeof result.message==="string")reply=result.message;
+    else reply=JSON.stringify(result);
+    if(pool){
+      await pool.query("INSERT INTO intelligence_messages(thread_id,role,content) VALUES($1,'user',$2),($1,'assistant',$3)",[threadId,input,reply]);
+      await pool.query("UPDATE intelligence_threads SET updated_at=NOW() WHERE id=$1",[threadId]);
+    }
+    res.status(200).json({...data,thread_id:threadId});
   }catch(e){console.error("Krative Core request failed:",e);res.status(502).json({error:"unable to reach Krative Core"});}
 });
 app.get("/api/admin/knowledge", async (req,res) => {
