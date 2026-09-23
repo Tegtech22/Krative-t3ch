@@ -41,16 +41,30 @@
 <div class="eyebrow">Administration</div><h1>Kranova Admin Centre.</h1>
 <p class="lead">Manage verified knowledge for Kranova Intelligence and control platform roles and permissions.</p>
 <div class="panel" style="margin-top:18px;padding:20px">
-<h3>Knowledge Centre</h3><p class="muted">Add knowledge that Kranova Intelligence can use. Verified active entries are sent to Krative Core.</p>
+<h3>Knowledge Centre</h3><p class="muted">Add knowledge in one place. Paste a Question, Content and Answer together, then save it. You can also paste multiple knowledge items at once.</p>
+<div class="panel" style="margin-top:12px;padding:16px;background:var(--bg)">
+<label class="muted">Paste knowledge</label>
+<textarea id="knowledgePaste" placeholder="Question: What is Kranova?&#10;Content: Kranova is a Krative T3ch learning and opportunity platform...&#10;Answer: Kranova is a learning and opportunity platform...&#10;&#10;Question: Who is Kranova for?&#10;Content: Kranova is designed for people around the world...&#10;Answer: Kranova is designed for people around the world..." style="width:100%;min-height:260px;margin-top:8px;background:var(--panel);border:1px solid var(--line);color:var(--text);border-radius:12px;padding:13px;line-height:1.6"></textarea>
 <div class="actions">
-<input id="knowledgeKey" placeholder="Knowledge key (optional)" style="flex:1">
-<input id="knowledgeCategory" placeholder="Category" style="flex:1">
-<input id="knowledgeTitle" placeholder="Title" style="flex:1">
+<input id="knowledgeCategory" placeholder="Category (applies to all)" style="flex:1">
+<input id="knowledgeSource" placeholder="Source / reference (optional)" style="flex:1">
+<label class="pill"><input id="knowledgeVerified" type="checkbox" checked> Verified</label>
+<button class="btn primary" onclick="savePastedKnowledge()">Save knowledge</button>
 </div>
-<textarea id="knowledgeContent" placeholder="Knowledge content..." style="width:100%;min-height:110px;margin-top:10px;background:var(--bg);border:1px solid var(--line);color:var(--text);border-radius:12px;padding:13px"></textarea>
-<textarea id="knowledgeAnswer" placeholder="Answer Kranova Intelligence should use..." style="width:100%;min-height:90px;margin-top:10px;background:var(--bg);border:1px solid var(--line);color:var(--text);border-radius:12px;padding:13px"></textarea>
-<div class="actions"><input id="knowledgeSource" placeholder="Source / reference" style="flex:1"><label class="pill"><input id="knowledgeVerified" type="checkbox" checked> Verified</label><button class="btn primary" onclick="addKnowledge()">Add knowledge</button></div>
 <div id="knowledgeMsg" class="muted"></div>
+<p class="muted" style="font-size:12px;margin-bottom:0">Format each item as Question:, Content:, Answer:. Separate multiple items with a blank line. The Question becomes the knowledge title.</p>
+</div>
+<div class="panel" style="margin-top:12px;padding:16px;background:var(--bg)">
+<details><summary style="cursor:pointer;color:var(--text);font-weight:700">Advanced single-entry fields</summary>
+<div class="actions" style="margin-top:12px">
+<input id="knowledgeKey" placeholder="Knowledge key (optional)" style="flex:1">
+<input id="knowledgeTitle" placeholder="Title / Question" style="flex:1">
+</div>
+<textarea id="knowledgeContent" placeholder="Knowledge content..." style="width:100%;min-height:100px;margin-top:10px;background:var(--panel);border:1px solid var(--line);color:var(--text);border-radius:12px;padding:13px"></textarea>
+<textarea id="knowledgeAnswer" placeholder="Answer Kranova Intelligence should use..." style="width:100%;min-height:80px;margin-top:10px;background:var(--panel);border:1px solid var(--line);color:var(--text);border-radius:12px;padding:13px"></textarea>
+<button class="btn" style="margin-top:10px" onclick="addKnowledge()">Save single entry</button>
+</details>
+</div>
 <div id="knowledgeList" style="margin-top:16px"><div class="empty">Loading knowledge...</div></div>
 </div>
 <div class="panel" style="margin-top:18px;padding:20px">
@@ -230,6 +244,50 @@ async function loadAdmin(){
     document.getElementById("knowledgeList").innerHTML=knowledge.length?knowledge.map(k=>'<article class="card" style="margin-top:10px"><span class="tag">'+escapeHtml(k.category)+'</span><h3>'+escapeHtml(k.title)+'</h3><p>'+escapeHtml(k.answer||k.content)+'</p><small class="muted">'+escapeHtml(k.source||"Admin")+' · '+(k.verified?"Verified":"Unverified")+' · '+(k.active?"Active":"Archived")+'</small><div class="actions">'+(k.active?'<button class="pill" onclick="archiveKnowledge('+k.id+')">Archive</button>':'')+'</div></article>').join(""):'<div class="empty">No knowledge entries yet.</div>';
     document.getElementById("roleList").innerHTML=users.map(u=>'<article class="card" style="margin-top:10px;display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap"><div><strong>'+escapeHtml(u.name)+'</strong><p class="muted">'+escapeHtml(u.email)+'</p></div><select onchange="changeRole('+u.id+',this.value)" style="background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:9px;padding:9px">'+["user","instructor","mentor","knowledge_contributor","moderator","admin","super_admin"].map(r=>'<option '+(u.role===r?"selected":"")+' value="'+r+'">'+r+'</option>').join("")+'</select></article>').join("");
   }catch(e){console.warn("Admin centre unavailable",e);}
+}
+function parseKnowledgePaste(raw){
+  const lines=raw.replace(/\\r/g,"").split("\\n");
+  const items=[];let current=null;let section=null;
+  const start=()=>{if(current&&current.question&&current.content&&current.answer)items.push(current);current={question:"",content:"",answer:""};section=null;};
+  for(let line of lines){
+    const trimmed=line.trim();
+    const match=trimmed.match(/^(question|content|answer)\\s*:\\s*(.*)$/i);
+    if(match){
+      const key=match[1].toLowerCase();
+      if(key==="question" && current && current.question && current.content && current.answer) start();
+      if(!current) start();
+      section=key;
+      current[key]+=match[2].trim();
+    }else if(current&&section&&trimmed){
+      current[section]+=(current[section]?"\\n":"")+trimmed;
+    }
+  }
+  if(current&&current.question&&current.content&&current.answer)items.push(current);
+  return items;
+}
+async function savePastedKnowledge(){
+  const msg=document.getElementById("knowledgeMsg");
+  const raw=document.getElementById("knowledgePaste").value.trim();
+  if(!raw){msg.textContent="Paste at least one Question, Content and Answer.";return;}
+  const items=parseKnowledgePaste(raw);
+  if(!items.length){msg.textContent="Use the format Question:, Content:, Answer:. Please check the pasted text.";return;}
+  msg.textContent="Saving "+items.length+" knowledge item"+(items.length===1?"":"s")+"...";
+  const category=document.getElementById("knowledgeCategory").value.trim()||"general";
+  const source=document.getElementById("knowledgeSource").value.trim()||"Admin";
+  const verified=document.getElementById("knowledgeVerified").checked;
+  let saved=0;
+  try{
+    for(const item of items){
+      const body={knowledge_key:"",category,title:item.question,content:item.content,answer:item.answer,source,verified,active:true};
+      const r=await fetch(API_BASE+"/api/admin/knowledge",{method:"POST",headers:{"Content-Type":"application/json",Authorization:"Bearer "+authToken},body:JSON.stringify(body)});
+      const d=await r.json();
+      if(!r.ok)throw new Error(d.error||"Unable to save knowledge");
+      saved++;
+    }
+    document.getElementById("knowledgePaste").value="";
+    msg.textContent=saved+" knowledge item"+(saved===1?"":"s")+" saved successfully.";
+    loadAdmin();
+  }catch(e){msg.textContent="Saved "+saved+" item"+(saved===1?"":"s")+". "+e.message;}
 }
 async function addKnowledge(){
   const msg=document.getElementById("knowledgeMsg");msg.textContent="Saving...";
