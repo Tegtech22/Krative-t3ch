@@ -40,9 +40,33 @@ async function initDb() {
     CREATE TABLE IF NOT EXISTS courses (id BIGSERIAL PRIMARY KEY,category TEXT NOT NULL,title TEXT NOT NULL,description TEXT NOT NULL,level TEXT NOT NULL,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
     CREATE TABLE IF NOT EXISTS opportunities (id BIGSERIAL PRIMARY KEY,type TEXT NOT NULL,title TEXT NOT NULL,category TEXT NOT NULL,description TEXT NOT NULL,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
     CREATE TABLE IF NOT EXISTS enrollments (id BIGSERIAL PRIMARY KEY,user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,course_id BIGINT NOT NULL REFERENCES courses(id) ON DELETE CASCADE,enrolled_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),progress INTEGER NOT NULL DEFAULT 0 CHECK(progress BETWEEN 0 AND 100),completed_at TIMESTAMPTZ,UNIQUE(user_id,course_id));
+    CREATE TABLE IF NOT EXISTS lessons (id BIGSERIAL PRIMARY KEY,course_id BIGINT NOT NULL REFERENCES courses(id) ON DELETE CASCADE,title TEXT NOT NULL,content TEXT NOT NULL,position INTEGER NOT NULL,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),UNIQUE(course_id,position));
+    CREATE TABLE IF NOT EXISTS lesson_progress (user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,lesson_id BIGINT NOT NULL REFERENCES lessons(id) ON DELETE CASCADE,completed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),PRIMARY KEY(user_id,lesson_id));
   `);
   for (const c of memory.courses) await pool.query("INSERT INTO courses(id,category,title,description,level) VALUES($1,$2,$3,$4,$5) ON CONFLICT (id) DO NOTHING",[c.id,c.category,c.title,c.description,c.level]);
   for (const o of memory.opportunities) await pool.query("INSERT INTO opportunities(id,type,title,category,description) VALUES($1,$2,$3,$4,$5) ON CONFLICT (id) DO NOTHING",[o.id,o.type,o.title,o.category,o.description]);
+  const lessonSeed = [
+    [1,1,"The web and how it works","Learn the basic relationship between browsers, servers, URLs, HTTP and web pages.",1],
+    [2,1,"HTML structure","Learn how HTML gives a web page its structure using elements, headings, links, images and forms.",2],
+    [3,1,"CSS and responsive design","Learn how CSS controls presentation, spacing, typography and responsive layouts.",3],
+    [4,2,"What is intelligence?","Explore intelligence as the ability to understand information, reason about it and act toward goals.",1],
+    [5,2,"NOETICA Intelligence","Understand the role of NOETICA Intelligence within the Krative T3ch ecosystem.",2],
+    [6,2,"Human and artificial intelligence","Explore how human intelligence and artificial intelligence can complement one another.",3],
+    [7,3,"Finding meaningful problems","Learn how to identify real problems, affected people and useful opportunities.",1],
+    [8,3,"From idea to solution","Turn a problem into a practical solution hypothesis and define what needs to be built.",2],
+    [9,3,"Testing an opportunity","Learn how to validate assumptions through research, feedback and small experiments.",3],
+    [10,4,"Digital creation basics","Understand the building blocks of digital products, content and experiences.",1],
+    [11,4,"Designing for people","Learn to organize a digital experience around user needs, clarity and accessibility.",2],
+    [12,4,"Create and iterate","Learn a simple cycle of making, reviewing, improving and publishing digital work.",3],
+    [13,5,"Clear communication","Learn how to communicate ideas clearly across messages, documents and conversations.",1],
+    [14,5,"Working with others","Understand roles, expectations, feedback and shared responsibility in collaboration.",2],
+    [15,5,"Resolving collaboration problems","Learn practical ways to surface disagreements, clarify goals and keep work moving.",3],
+    [16,6,"Asking a research question","Learn how to turn curiosity into a focused question that can be investigated.",1],
+    [17,6,"Finding and evaluating information","Learn how to search for evidence and distinguish useful sources from weak information.",2],
+    [18,6,"Communicating findings","Learn how to organize evidence, explain conclusions and communicate limitations.",3]
+  ];
+  for (const l of lessonSeed) await pool.query("INSERT INTO lessons(id,course_id,title,content,position) VALUES($1,$2,$3,$4,$5) ON CONFLICT (id) DO NOTHING",l);
+
 }
 
 app.get("/health", async (_req,res) => {
@@ -128,6 +152,51 @@ app.post("/api/courses/:id/enroll", async (req,res) => {
   } catch(e) { console.error("Enrollment failed:",e); res.status(500).json({error:"unable to enroll"}); }
 });
 
+
+app.get("/api/courses/:id/lessons", async (req,res) => {
+  const courseId = Number(req.params.id);
+  if (!Number.isInteger(courseId)) return res.status(400).json({error:"invalid course id"});
+  if (!pool) return res.json([]);
+  try {
+    const {rows}=await pool.query(`
+      SELECT l.id,l.course_id,l.title,l.content,l.position,
+             CASE WHEN lp.lesson_id IS NULL THEN false ELSE true END AS completed,
+             lp.completed_at
+      FROM lessons l
+      LEFT JOIN lesson_progress lp ON lp.lesson_id=l.id AND lp.user_id=$1
+      WHERE l.course_id=$2 ORDER BY l.position
+    `,[(await getAuthUser(req))?.id || 0,courseId]);
+    res.json(rows);
+  } catch(e) { console.error("Lesson lookup failed:",e); res.status(500).json({error:"unable to load lessons"}); }
+});
+
+app.post("/api/lessons/:id/complete", async (req,res) => {
+  const user = await getAuthUser(req);
+  if (!user) return res.status(401).json({error:"authentication required"});
+  const lessonId=Number(req.params.id);
+  if (!Number.isInteger(lessonId)) return res.status(400).json({error:"invalid lesson id"});
+  if (!pool) return res.json({ok:true,lesson_id:lessonId,progress:100});
+  try {
+    const lesson=await pool.query("SELECT id,course_id FROM lessons WHERE id=$1",[lessonId]);
+    if(!lesson.rows[0]) return res.status(404).json({error:"lesson not found"});
+    const courseId=lesson.rows[0].course_id;
+    const enrollment=await pool.query("SELECT id FROM enrollments WHERE user_id=$1 AND course_id=$2",[user.id,courseId]);
+    if(!enrollment.rows[0]) return res.status(403).json({error:"enroll in this course first"});
+    await pool.query("INSERT INTO lesson_progress(user_id,lesson_id) VALUES($1,$2) ON CONFLICT(user_id,lesson_id) DO NOTHING",[user.id,lessonId]);
+    const counts=await pool.query(`
+      SELECT COUNT(*)::int AS total,
+             COUNT(lp.lesson_id)::int AS completed
+      FROM lessons l
+      LEFT JOIN lesson_progress lp ON lp.lesson_id=l.id AND lp.user_id=$1
+      WHERE l.course_id=$2
+    `,[user.id,courseId]);
+    const total=counts.rows[0].total, completed=counts.rows[0].completed;
+    const progress=total ? Math.round((completed/total)*100) : 0;
+    const updated=await pool.query("UPDATE enrollments SET progress=$1,completed_at=CASE WHEN $1=100 THEN COALESCE(completed_at,NOW()) ELSE NULL END WHERE user_id=$2 AND course_id=$3 RETURNING progress,completed_at",[progress,user.id,courseId]);
+    res.json({ok:true,lesson_id:lessonId,course_id:courseId,progress,completed:progress===100,completed_at:updated.rows[0]?.completed_at||null});
+  } catch(e) { console.error("Lesson completion failed:",e); res.status(500).json({error:"unable to complete lesson"}); }
+});
+
 app.patch("/api/courses/:id/progress", async (req,res) => {
   const user = await getAuthUser(req);
   if (!user) return res.status(401).json({error:"authentication required"});
@@ -147,7 +216,14 @@ app.get("/api/me/enrollments", async (req,res) => {
   try {
     if (!pool) return res.json([]);
     const {rows}=await pool.query(`
-      SELECT c.id,c.category,c.title,c.description,c.level,e.enrolled_at,e.progress,e.completed_at
+      SELECT c.id,c.category,c.title,c.description,c.level,e.enrolled_at,
+        COALESCE((SELECT ROUND(COUNT(lp.lesson_id)::numeric * 100 / NULLIF(COUNT(l.id),0))::int
+                  FROM lessons l LEFT JOIN lesson_progress lp ON lp.lesson_id=l.id AND lp.user_id=$1
+                  WHERE l.course_id=c.id),0) AS progress,
+        CASE WHEN COALESCE((SELECT COUNT(*) FROM lessons l WHERE l.course_id=c.id),0)>0
+                  AND COALESCE((SELECT COUNT(*) FROM lesson_progress lp JOIN lessons l ON l.id=lp.lesson_id WHERE lp.user_id=$1 AND l.course_id=c.id),0)
+                  = (SELECT COUNT(*) FROM lessons l WHERE l.course_id=c.id)
+             THEN e.completed_at ELSE NULL END AS completed_at
       FROM enrollments e JOIN courses c ON c.id=e.course_id
       WHERE e.user_id=$1 ORDER BY e.enrolled_at DESC
     `,[user.id]);
