@@ -211,6 +211,7 @@ async function sendIntelligence(input){
     const result=data.result||data;
     let reply="";
     if(typeof result==="string") reply=result;
+    else if(result && result.answer && typeof result.answer.text==="string") reply=result.answer.text;
     else if(result && typeof result.output==="string") reply=result.output;
     else if(result && typeof result.response==="string") reply=result.response;
     else if(result && typeof result.message==="string") reply=result.message;
