@@ -97,6 +97,17 @@ async function enrollCourse(courseId){
     loadEnrollments();
   }catch(e){alert(e.message);}
 }
+async function updateCourseProgress(courseId,current){
+  const next=prompt("Enter course progress (0-100):",current);
+  if(next===null)return;
+  const progress=Number(next);
+  if(!Number.isInteger(progress)||progress<0||progress>100){alert("Enter a whole number from 0 to 100.");return;}
+  try{
+    const res=await fetch(API_BASE+"/api/courses/"+courseId+"/progress",{method:"PATCH",headers:{"Content-Type":"application/json",Authorization:"Bearer "+authToken},body:JSON.stringify({progress})});
+    const data=await res.json();if(!res.ok)throw new Error(data.error||"Unable to update progress");
+    loadEnrollments();
+  }catch(e){alert(e.message);}
+}
 async function loadEnrollments(){
   if(!authToken)return;
   try{
@@ -104,7 +115,7 @@ async function loadEnrollments(){
     if(!res.ok)return;
     const data=await res.json();
     document.getElementById("progress").textContent=(data.length*10>100?100:data.length*10)+"%";
-    document.getElementById("enrollmentList").innerHTML=data.length?data.map(c=>'<div class="card"><span class="tag">'+c.category+'</span><h3>'+c.title+'</h3><p>Enrolled and ready to learn.</p></div>').join(""):'<div class="empty">You have not enrolled in a course yet.</div>';
+    document.getElementById("enrollmentList").innerHTML=data.length?data.map(c=>'<div class="card"><span class="tag">'+c.category+'</span><h3>'+c.title+'</h3><p>'+(c.progress||0)+'% complete'+(Number(c.progress)===100?" · Completed":"")+'</p><div style="height:8px;background:var(--bg);border-radius:8px;overflow:hidden;margin:12px 0"><div style="height:100%;width:'+(c.progress||0)+'%;background:var(--blue)"></div></div><button class="pill" onclick="updateCourseProgress('+c.id+',${c.progress||0})">Update progress</button></div>').join(""):'<div class="empty">You have not enrolled in a course yet.</div>';
   }catch(e){console.warn("Could not load enrollments",e);}
 }
 async function restoreAuth(){if(!authToken)return;try{const res=await fetch(API_BASE+"/api/auth/me",{headers:{Authorization:"Bearer "+authToken}});if(!res.ok)throw new Error();const data=await res.json();setAuth(data.user,authToken);loadEnrollments();}catch{localStorage.removeItem("kranova_token");authToken="";}}
