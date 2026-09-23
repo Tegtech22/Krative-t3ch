@@ -167,17 +167,46 @@ app.post("/api/intelligence", async (req,res) => {
       try{
         const {rows}=await pool.query("SELECT id,knowledge_key,category,title,content,answer,source,verified,active FROM knowledge WHERE active=true AND verified=true ORDER BY updated_at DESC,id DESC");
         if(rows.length){
-          knowledgeSources=rows.map(k=>({
-            id:k.knowledge_key||String(k.id),
-            type:k.category||"general",
-            title:k.title,
-            content:k.content,
-            answer:k.answer||k.content,
-            confidence:0.98
-          }));
+          const normalizeText=value=>String(value||"").toLowerCase().replace(/[^a-z0-9\\s]/g," ").replace(/\\s+/g," ").trim();
+          const stopWords=new Set(["the","and","for","with","what","who","how","why","when","where","is","are","can","does","do","on","in","of","to","a","an","this","that","it"]);
+          const queryTokens=normalizeText(input).split(" ").filter(t=>t.length>1&&!stopWords.has(t));
+          const scored=rows.map(k=>{
+            const title=normalizeText(k.title),category=normalizeText(k.category),content=normalizeText(k.content),answer=normalizeText(k.answer);
+            const haystack=title+" "+category+" "+content+" "+answer;
+            let score=0;
+            for(const token of queryTokens){
+              if(title.split(" ").includes(token)) score+=8;
+              if(category.split(" ").includes(token)) score+=4;
+              if(content.includes(token)) score+=2;
+              if(answer.includes(token)) score+=3;
+            }
+            const exactTitle=queryTokens.length>0 && queryTokens.every(t=>title.includes(t));
+            if(exactTitle) score+=12;
+            return {k,score};
+          }).sort((a,b)=>b.score-a.score||Number(b.k.id)-Number(a.k.id));
+          const relevant=scored.filter(x=>x.score>0).slice(0,5);
+          if(relevant.length){
+            knowledgeSources=relevant.map(({k,score})=>({
+              id:k.knowledge_key||String(k.id),
+              type:k.category||"general",
+              title:k.title,
+              content:k.content,
+              answer:k.answer||k.content,
+              confidence:Math.min(0.99,0.90+Math.min(score,9)*0.01)
+            }));
+          } else {
+            knowledgeSources=rows.slice(0,5).map(k=>({
+              id:k.knowledge_key||String(k.id),
+              type:k.category||"general",
+              title:k.title,
+              content:k.content,
+              answer:k.answer||k.content,
+              confidence:0.90
+            }));
+          }
         }
       }catch(knowledgeError){
-        console.warn("Kranova Knowledge Centre lookup failed; using verified foundation knowledge:",knowledgeError.message);
+        console.warn("Kranova Knowledge Centre retrieval failed; using verified foundation knowledge:",knowledgeError.message);
       }
     }
     const r=await fetch(base+"/api/v1/intelligence",{method:"POST",headers:{"Content-Type":"application/json",Authorization:"Bearer "+key},body:JSON.stringify({
