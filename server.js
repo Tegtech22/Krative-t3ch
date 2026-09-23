@@ -43,6 +43,9 @@ async function initDb() {
     CREATE TABLE IF NOT EXISTS enrollments (id BIGSERIAL PRIMARY KEY,user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,course_id BIGINT NOT NULL REFERENCES courses(id) ON DELETE CASCADE,enrolled_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),progress INTEGER NOT NULL DEFAULT 0 CHECK(progress BETWEEN 0 AND 100),completed_at TIMESTAMPTZ,UNIQUE(user_id,course_id));
     CREATE TABLE IF NOT EXISTS lessons (id BIGSERIAL PRIMARY KEY,course_id BIGINT NOT NULL REFERENCES courses(id) ON DELETE CASCADE,title TEXT NOT NULL,content TEXT NOT NULL,position INTEGER NOT NULL,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),UNIQUE(course_id,position));
     CREATE TABLE IF NOT EXISTS lesson_progress (user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,lesson_id BIGINT NOT NULL REFERENCES lessons(id) ON DELETE CASCADE,completed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),PRIMARY KEY(user_id,lesson_id));
+    CREATE TABLE IF NOT EXISTS posts (id BIGSERIAL PRIMARY KEY,user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,content TEXT NOT NULL,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
+    CREATE TABLE IF NOT EXISTS comments (id BIGSERIAL PRIMARY KEY,post_id BIGINT NOT NULL REFERENCES posts(id) ON DELETE CASCADE,user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,content TEXT NOT NULL,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
+    CREATE TABLE IF NOT EXISTS connections (id BIGSERIAL PRIMARY KEY,requester_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,receiver_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,status TEXT NOT NULL DEFAULT 'pending',created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),UNIQUE(requester_id,receiver_id));
   `);
   for (const c of memory.courses) await pool.query("INSERT INTO courses(id,category,title,description,level) VALUES($1,$2,$3,$4,$5) ON CONFLICT (id) DO NOTHING",[c.id,c.category,c.title,c.description,c.level]);
   for (const o of memory.opportunities) await pool.query("INSERT INTO opportunities(id,type,title,category,description) VALUES($1,$2,$3,$4,$5) ON CONFLICT (id) DO NOTHING",[o.id,o.type,o.title,o.category,o.description]);
@@ -81,6 +84,31 @@ app.get("/api/courses", async (_req,res) => {
   const { rows } = await pool.query("SELECT id,category,title,description,level FROM courses ORDER BY id"); res.json(rows);
 });
 
+app.get("/api/community/posts", async (_req,res) => {
+  if(!pool)return res.json([]);
+  try{const {rows}=await pool.query(`
+    SELECT p.id,p.content,p.created_at,u.id AS user_id,u.name,
+      (SELECT COUNT(*)::int FROM comments c WHERE c.post_id=p.id) AS comment_count
+    FROM posts p JOIN users u ON u.id=p.user_id ORDER BY p.created_at DESC LIMIT 50
+  `);res.json(rows);}catch(e){res.status(500).json({error:"unable to load posts"});}
+});
+app.post("/api/community/posts", async (req,res) => {
+  const user=await getAuthUser(req);if(!user)return res.status(401).json({error:"authentication required"});
+  const content=String(req.body?.content||"").trim();if(!content||content.length>2000)return res.status(400).json({error:"post must be 1-2000 characters"});
+  if(!pool)return res.status(201).json({id:Date.now(),content,user_id:user.id,name:user.name,created_at:new Date().toISOString(),comment_count:0});
+  try{const {rows}=await pool.query("INSERT INTO posts(user_id,content) VALUES($1,$2) RETURNING id,content,created_at",[user.id,content]);res.status(201).json({...rows[0],user_id:user.id,name:user.name,comment_count:0});}catch(e){res.status(500).json({error:"unable to create post"});}
+});
+app.get("/api/community/posts/:id/comments", async (req,res) => {
+  const id=Number(req.params.id);if(!Number.isInteger(id))return res.status(400).json({error:"invalid post id"});
+  if(!pool)return res.json([]);
+  try{const {rows}=await pool.query("SELECT c.id,c.content,c.created_at,u.id AS user_id,u.name FROM comments c JOIN users u ON u.id=c.user_id WHERE c.post_id=$1 ORDER BY c.created_at ASC",[id]);res.json(rows);}catch(e){res.status(500).json({error:"unable to load comments"});}
+});
+app.post("/api/community/posts/:id/comments", async (req,res) => {
+  const user=await getAuthUser(req);if(!user)return res.status(401).json({error:"authentication required"});
+  const postId=Number(req.params.id),content=String(req.body?.content||"").trim();if(!Number.isInteger(postId)||!content||content.length>1000)return res.status(400).json({error:"valid post id and comment of 1-1000 characters are required"});
+  if(!pool)return res.status(201).json({id:Date.now(),post_id:postId,content,user_id:user.id,name:user.name,created_at:new Date().toISOString()});
+  try{const post=await pool.query("SELECT id FROM posts WHERE id=$1",[postId]);if(!post.rows[0])return res.status(404).json({error:"post not found"});const {rows}=await pool.query("INSERT INTO comments(post_id,user_id,content) VALUES($1,$2,$3) RETURNING id,content,created_at",[postId,user.id,content]);res.status(201).json({...rows[0],post_id:postId,user_id:user.id,name:user.name});}catch(e){res.status(500).json({error:"unable to create comment"});}
+});
 app.get("/api/opportunities", async (_req,res) => {
   if (!pool) return res.json(memory.opportunities);
   const { rows } = await pool.query("SELECT id,type,title,category,description FROM opportunities ORDER BY id"); res.json(rows);
