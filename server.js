@@ -162,12 +162,30 @@ app.post("/api/intelligence", async (req,res) => {
   if(!base||!key)return res.status(503).json({error:"Krative Core integration is not configured"});
   const input=String(req.body?.input||"").trim();if(!input)return res.status(400).json({error:"input is required"});
   try{
+    let knowledgeSources=KRANOVA_KNOWLEDGE.filter(k=>k.active!==false).map(k=>({id:k.id,type:k.type,title:k.title,content:k.content,answer:k.answer,confidence:k.confidence||0.95}));
+    if(pool){
+      try{
+        const {rows}=await pool.query("SELECT id,knowledge_key,category,title,content,answer,source,verified,active FROM knowledge WHERE active=true AND verified=true ORDER BY updated_at DESC,id DESC");
+        if(rows.length){
+          knowledgeSources=rows.map(k=>({
+            id:k.knowledge_key||String(k.id),
+            type:k.category||"general",
+            title:k.title,
+            content:k.content,
+            answer:k.answer||k.content,
+            confidence:0.98
+          }));
+        }
+      }catch(knowledgeError){
+        console.warn("Kranova Knowledge Centre lookup failed; using verified foundation knowledge:",knowledgeError.message);
+      }
+    }
     const r=await fetch(base+"/api/v1/intelligence",{method:"POST",headers:{"Content-Type":"application/json",Authorization:"Bearer "+key},body:JSON.stringify({
       input,
       context:{
         source:"kranova",
         user_id:user.id,
-        knowledgeSources: KRANOVA_KNOWLEDGE.filter(k=>k.active!==false).map(k=>({id:k.id,type:k.type,title:k.title,content:k.content,answer:k.answer,confidence:k.confidence||0.95}))
+        knowledgeSources
       }
     })});
     const data=await r.json().catch(()=>({error:"invalid Core response"}));
