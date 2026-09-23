@@ -82,7 +82,13 @@ async function initDb() {
     CREATE TABLE IF NOT EXISTS comments (id BIGSERIAL PRIMARY KEY,post_id BIGINT NOT NULL REFERENCES posts(id) ON DELETE CASCADE,user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,content TEXT NOT NULL,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
     CREATE TABLE IF NOT EXISTS connections (id BIGSERIAL PRIMARY KEY,requester_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,receiver_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,status TEXT NOT NULL DEFAULT 'pending',created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),UNIQUE(requester_id,receiver_id));
     CREATE TABLE IF NOT EXISTS profiles (user_id BIGINT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,bio TEXT NOT NULL DEFAULT '',skills TEXT NOT NULL DEFAULT '',learning_goals TEXT NOT NULL DEFAULT '',updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'user';
+    CREATE TABLE IF NOT EXISTS knowledge (id BIGSERIAL PRIMARY KEY,knowledge_key TEXT UNIQUE,category TEXT NOT NULL,title TEXT NOT NULL,content TEXT NOT NULL,answer TEXT NOT NULL DEFAULT '',source TEXT NOT NULL DEFAULT '',verified BOOLEAN NOT NULL DEFAULT false,active BOOLEAN NOT NULL DEFAULT true,created_by BIGINT REFERENCES users(id) ON DELETE SET NULL,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
+    CREATE TABLE IF NOT EXISTS role_audit (id BIGSERIAL PRIMARY KEY,target_user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,old_role TEXT,new_role TEXT NOT NULL,changed_by BIGINT REFERENCES users(id) ON DELETE SET NULL,changed_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
+    CREATE INDEX IF NOT EXISTS knowledge_active_idx ON knowledge(active,verified);
   `);
+  await pool.query("UPDATE users SET role='super_admin' WHERE id=(SELECT id FROM users ORDER BY created_at,id LIMIT 1) AND NOT EXISTS (SELECT 1 FROM users WHERE role IN ('admin','super_admin'))");
+  for (const k of KRANOVA_KNOWLEDGE) await pool.query("INSERT INTO knowledge(knowledge_key,category,title,content,answer,source,verified,active) VALUES($1,$2,$3,$4,$5,$6,true,true) ON CONFLICT(knowledge_key) DO UPDATE SET category=EXCLUDED.category,title=EXCLUDED.title,content=EXCLUDED.content,answer=EXCLUDED.answer,verified=true,active=true,updated_at=NOW()",[k.id,k.type,k.title,k.content,k.answer,"Kranova verified foundation"]);
   for (const c of memory.courses) await pool.query("INSERT INTO courses(id,category,title,description,level) VALUES($1,$2,$3,$4,$5) ON CONFLICT (id) DO NOTHING",[c.id,c.category,c.title,c.description,c.level]);
   for (const o of memory.opportunities) await pool.query("INSERT INTO opportunities(id,type,title,category,description) VALUES($1,$2,$3,$4,$5) ON CONFLICT (id) DO NOTHING",[o.id,o.type,o.title,o.category,o.description]);
   const lessonSeed = [
@@ -161,12 +167,51 @@ app.post("/api/intelligence", async (req,res) => {
       context:{
         source:"kranova",
         user_id:user.id,
-        knowledgeSources: KRANOVA_KNOWLEDGE
+        knowledgeSources: KRANOVA_KNOWLEDGE.filter(k=>k.active!==false).map(k=>({id:k.id,type:k.type,title:k.title,content:k.content,answer:k.answer,confidence:k.confidence||0.95}))
       }
     })});
     const data=await r.json().catch(()=>({error:"invalid Core response"}));
     res.status(r.status).json(data);
   }catch(e){console.error("Krative Core request failed:",e);res.status(502).json({error:"unable to reach Krative Core"});}
+});
+app.get("/api/admin/knowledge", async (req,res) => {
+  const a=await requireAdmin(req,res); if(a.error)return;
+  if(!pool)return res.json([]);
+  try{const {rows}=await pool.query("SELECT id,knowledge_key,category,title,content,answer,source,verified,active,created_at,updated_at FROM knowledge ORDER BY updated_at DESC,id DESC");res.json(rows);}catch(e){res.status(500).json({error:"unable to load knowledge"});}
+});
+app.post("/api/admin/knowledge", async (req,res) => {
+  const a=await requireAdmin(req,res); if(a.error)return;
+  const category=String(req.body?.category||"general").trim().slice(0,80),title=String(req.body?.title||"").trim().slice(0,200),content=String(req.body?.content||"").trim().slice(0,10000),answer=String(req.body?.answer||content).trim().slice(0,10000),source=String(req.body?.source||"Admin").trim().slice(0,500),key=String(req.body?.knowledge_key||"").trim().slice(0,200)||null;
+  if(!title||!content)return res.status(400).json({error:"title and content are required"});
+  if(!pool)return res.status(201).json({ok:true});
+  try{const {rows}=await pool.query("INSERT INTO knowledge(knowledge_key,category,title,content,answer,source,verified,active,created_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *",[key,category,title,content,answer,source,Boolean(req.body?.verified),req.body?.active!==false,a.user.id]);res.status(201).json(rows[0]);}catch(e){if(e.code==="23505")return res.status(409).json({error:"knowledge key already exists"});res.status(500).json({error:"unable to add knowledge"});}
+});
+app.put("/api/admin/knowledge/:id", async (req,res) => {
+  const a=await requireAdmin(req,res); if(a.error)return;
+  const id=Number(req.params.id);if(!Number.isInteger(id))return res.status(400).json({error:"invalid knowledge id"});
+  const category=String(req.body?.category||"general").trim(),title=String(req.body?.title||"").trim(),content=String(req.body?.content||"").trim(),answer=String(req.body?.answer||content).trim(),source=String(req.body?.source||"Admin").trim(),key=String(req.body?.knowledge_key||"").trim()||null;
+  if(!title||!content)return res.status(400).json({error:"title and content are required"});
+  if(!pool)return res.json({ok:true});
+  try{const {rows}=await pool.query("UPDATE knowledge SET category=$1,title=$2,content=$3,answer=$4,source=$5,knowledge_key=$6,verified=$7,active=$8,updated_at=NOW() WHERE id=$9 RETURNING *",[category,title,content,answer,source,key,Boolean(req.body?.verified),req.body?.active!==false,id]);if(!rows[0])return res.status(404).json({error:"knowledge not found"});res.json(rows[0]);}catch(e){if(e.code==="23505")return res.status(409).json({error:"knowledge key already exists"});res.status(500).json({error:"unable to update knowledge"});}
+});
+app.delete("/api/admin/knowledge/:id", async (req,res) => {
+  const a=await requireAdmin(req,res);if(a.error)return;
+  const id=Number(req.params.id);if(!Number.isInteger(id))return res.status(400).json({error:"invalid knowledge id"});
+  if(!pool)return res.json({ok:true});
+  try{const r=await pool.query("UPDATE knowledge SET active=false,updated_at=NOW() WHERE id=$1 RETURNING id",[id]);if(!r.rows[0])return res.status(404).json({error:"knowledge not found"});res.json({ok:true,archived:true});}catch(e){res.status(500).json({error:"unable to archive knowledge"});}
+});
+app.get("/api/admin/users", async (req,res) => {
+  const a=await requireAdmin(req,res);if(a.error)return;
+  if(!pool)return res.json([]);
+  try{const {rows}=await pool.query("SELECT id,name,email,role,created_at FROM users ORDER BY created_at ASC,id ASC");res.json(rows);}catch(e){res.status(500).json({error:"unable to load users"});}
+});
+app.put("/api/admin/users/:id/role", async (req,res) => {
+  const a=await requireAdmin(req,res);if(a.error)return;
+  const id=Number(req.params.id),role=String(req.body?.role||"").trim(),allowed=["user","instructor","mentor","knowledge_contributor","moderator","admin","super_admin"];
+  if(!Number.isInteger(id)||!allowed.includes(role))return res.status(400).json({error:"invalid user id or role"});
+  if(id===a.user.id&&role!=="super_admin"&&a.user.role==="super_admin")return res.status(400).json({error:"super admin cannot remove their own super admin role"});
+  if(!pool)return res.json({ok:true,id,role});
+  try{const old=await pool.query("SELECT role FROM users WHERE id=$1",[id]);if(!old.rows[0])return res.status(404).json({error:"user not found"});await pool.query("UPDATE users SET role=$1 WHERE id=$2",[role,id]);await pool.query("INSERT INTO role_audit(target_user_id,old_role,new_role,changed_by) VALUES($1,$2,$3,$4)",[id,old.rows[0].role,role,a.user.id]);res.json({ok:true,id,role});}catch(e){res.status(500).json({error:"unable to update role"});}
 });
 app.get("/api/community/posts", async (_req,res) => {
   if(!pool)return res.json([]);
@@ -260,6 +305,12 @@ async function createSession(userId) {
   else memory.sessions.set(tokenHash, { userId, expires_at: expiresAt.toISOString() });
   return token;
 }
+async function requireAdmin(req,res){
+  const user=await getAuthUser(req);
+  if(!user)return {error:true,user:null};
+  if(!['admin','super_admin'].includes(user.role)){res.status(403).json({error:"admin access required"});return {error:true,user};}
+  return {error:false,user};
+}
 async function getAuthUser(req) {
   const header = req.headers.authorization || "";
   if (!header.startsWith("Bearer ")) return null;
@@ -268,7 +319,7 @@ async function getAuthUser(req) {
   const tokenHash = hashToken(token);
   if (pool) {
     const { rows } = await pool.query(`
-      SELECT u.id,u.name,u.email,u.created_at
+      SELECT u.id,u.name,u.email,u.role,u.created_at
       FROM sessions s JOIN users u ON u.id=s.user_id
       WHERE s.token_hash=$1 AND s.expires_at > NOW()
     `, [tokenHash]);
