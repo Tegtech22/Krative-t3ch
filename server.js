@@ -115,6 +115,17 @@ app.get("/api/me/connections", async (req,res) => {
   if(!pool)return res.json([]);
   try{const {rows}=await pool.query("SELECT c.id,c.status,c.requester_id,c.receiver_id,u.name FROM connections c JOIN users u ON u.id=CASE WHEN c.requester_id=$1 THEN c.receiver_id ELSE c.requester_id END WHERE c.requester_id=$1 OR c.receiver_id=$1 ORDER BY c.created_at DESC",[user.id]);res.json(rows);}catch(e){res.status(500).json({error:"unable to load connections"});}
 });
+app.post("/api/intelligence", async (req,res) => {
+  const user=await getAuthUser(req);if(!user)return res.status(401).json({error:"authentication required"});
+  const base=String(process.env.KRATIVE_CORE_BASE_URL||"").replace(/\/$/,""),key=process.env.KRATIVE_CORE_API_KEY||"";
+  if(!base||!key)return res.status(503).json({error:"Krative Core integration is not configured"});
+  const input=String(req.body?.input||"").trim();if(!input)return res.status(400).json({error:"input is required"});
+  try{
+    const r=await fetch(base+"/api/v1/intelligence",{method:"POST",headers:{"Content-Type":"application/json",Authorization:"Bearer "+key},body:JSON.stringify({input,context:{source:"kranova",user_id:user.id}})});
+    const data=await r.json().catch(()=>({error:"invalid Core response"}));
+    res.status(r.status).json(data);
+  }catch(e){console.error("Krative Core request failed:",e);res.status(502).json({error:"unable to reach Krative Core"});}
+});
 app.get("/api/community/posts", async (_req,res) => {
   if(!pool)return res.json([]);
   try{const {rows}=await pool.query(`
