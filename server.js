@@ -39,6 +39,7 @@ async function initDb() {
     CREATE TABLE IF NOT EXISTS sessions (token_hash TEXT PRIMARY KEY,user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,expires_at TIMESTAMPTZ NOT NULL,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
     CREATE TABLE IF NOT EXISTS courses (id BIGSERIAL PRIMARY KEY,category TEXT NOT NULL,title TEXT NOT NULL,description TEXT NOT NULL,level TEXT NOT NULL,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
     CREATE TABLE IF NOT EXISTS opportunities (id BIGSERIAL PRIMARY KEY,type TEXT NOT NULL,title TEXT NOT NULL,category TEXT NOT NULL,description TEXT NOT NULL,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
+    CREATE TABLE IF NOT EXISTS enrollments (id BIGSERIAL PRIMARY KEY,user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,course_id BIGINT NOT NULL REFERENCES courses(id) ON DELETE CASCADE,enrolled_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),UNIQUE(user_id,course_id));
   `);
   for (const c of memory.courses) await pool.query("INSERT INTO courses(id,category,title,description,level) VALUES($1,$2,$3,$4,$5) ON CONFLICT (id) DO NOTHING",[c.id,c.category,c.title,c.description,c.level]);
   for (const o of memory.opportunities) await pool.query("INSERT INTO opportunities(id,type,title,category,description) VALUES($1,$2,$3,$4,$5) ON CONFLICT (id) DO NOTHING",[o.id,o.type,o.title,o.category,o.description]);
@@ -110,6 +111,36 @@ async function getAuthUser(req) {
   if (!session || new Date(session.expires_at) <= new Date()) return null;
   return memory.users.find(u => u.id === session.userId) || null;
 }
+
+app.post("/api/courses/:id/enroll", async (req,res) => {
+  const user = await getAuthUser(req);
+  if (!user) return res.status(401).json({ error:"authentication required" });
+  const courseId = Number(req.params.id);
+  if (!Number.isInteger(courseId)) return res.status(400).json({ error:"invalid course id" });
+  try {
+    if (pool) {
+      const course = await pool.query("SELECT id,title FROM courses WHERE id=$1",[courseId]);
+      if (!course.rows[0]) return res.status(404).json({error:"course not found"});
+      const result = await pool.query("INSERT INTO enrollments(user_id,course_id) VALUES($1,$2) ON CONFLICT(user_id,course_id) DO NOTHING RETURNING id,enrolled_at",[user.id,courseId]);
+      return res.status(result.rows[0] ? 201 : 200).json({ok:true,course_id:courseId,enrolled:!!result.rows[0]});
+    }
+    return res.status(201).json({ok:true,course_id:courseId,enrolled:true});
+  } catch(e) { console.error("Enrollment failed:",e); res.status(500).json({error:"unable to enroll"}); }
+});
+
+app.get("/api/me/enrollments", async (req,res) => {
+  const user = await getAuthUser(req);
+  if (!user) return res.status(401).json({error:"authentication required"});
+  try {
+    if (!pool) return res.json([]);
+    const {rows}=await pool.query(`
+      SELECT c.id,c.category,c.title,c.description,c.level,e.enrolled_at
+      FROM enrollments e JOIN courses c ON c.id=e.course_id
+      WHERE e.user_id=$1 ORDER BY e.enrolled_at DESC
+    `,[user.id]);
+    res.json(rows);
+  } catch(e) { console.error("Enrollment lookup failed:",e); res.status(500).json({error:"unable to load enrollments"}); }
+});
 
 app.post("/api/auth/signup", async (req,res) => {
   const { name, email, password } = req.body || {};
