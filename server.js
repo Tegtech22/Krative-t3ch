@@ -39,6 +39,7 @@ async function initDb() {
     CREATE TABLE IF NOT EXISTS sessions (token_hash TEXT PRIMARY KEY,user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,expires_at TIMESTAMPTZ NOT NULL,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
     CREATE TABLE IF NOT EXISTS courses (id BIGSERIAL PRIMARY KEY,category TEXT NOT NULL,title TEXT NOT NULL,description TEXT NOT NULL,level TEXT NOT NULL,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
     CREATE TABLE IF NOT EXISTS opportunities (id BIGSERIAL PRIMARY KEY,type TEXT NOT NULL,title TEXT NOT NULL,category TEXT NOT NULL,description TEXT NOT NULL,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
+    CREATE TABLE IF NOT EXISTS applications (id BIGSERIAL PRIMARY KEY,user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,opportunity_id BIGINT NOT NULL REFERENCES opportunities(id) ON DELETE CASCADE,status TEXT NOT NULL DEFAULT 'Applied',applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),UNIQUE(user_id,opportunity_id));
     CREATE TABLE IF NOT EXISTS enrollments (id BIGSERIAL PRIMARY KEY,user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,course_id BIGINT NOT NULL REFERENCES courses(id) ON DELETE CASCADE,enrolled_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),progress INTEGER NOT NULL DEFAULT 0 CHECK(progress BETWEEN 0 AND 100),completed_at TIMESTAMPTZ,UNIQUE(user_id,course_id));
     CREATE TABLE IF NOT EXISTS lessons (id BIGSERIAL PRIMARY KEY,course_id BIGINT NOT NULL REFERENCES courses(id) ON DELETE CASCADE,title TEXT NOT NULL,content TEXT NOT NULL,position INTEGER NOT NULL,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),UNIQUE(course_id,position));
     CREATE TABLE IF NOT EXISTS lesson_progress (user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,lesson_id BIGINT NOT NULL REFERENCES lessons(id) ON DELETE CASCADE,completed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),PRIMARY KEY(user_id,lesson_id));
@@ -83,6 +84,36 @@ app.get("/api/courses", async (_req,res) => {
 app.get("/api/opportunities", async (_req,res) => {
   if (!pool) return res.json(memory.opportunities);
   const { rows } = await pool.query("SELECT id,type,title,category,description FROM opportunities ORDER BY id"); res.json(rows);
+});
+
+app.get("/api/opportunities/:id", async (req,res) => {
+  const id=Number(req.params.id); if(!Number.isInteger(id)) return res.status(400).json({error:"invalid opportunity id"});
+  if(!pool){const o=memory.opportunities.find(x=>x.id===id);return o?res.json(o):res.status(404).json({error:"opportunity not found"});}
+  try{const {rows}=await pool.query("SELECT id,type,title,category,description FROM opportunities WHERE id=$1",[id]);if(!rows[0])return res.status(404).json({error:"opportunity not found"});res.json(rows[0]);}
+  catch(e){res.status(500).json({error:"unable to load opportunity"});}
+});
+
+app.post("/api/opportunities/:id/apply", async (req,res) => {
+  const user=await getAuthUser(req); if(!user)return res.status(401).json({error:"authentication required"});
+  const opportunityId=Number(req.params.id); if(!Number.isInteger(opportunityId))return res.status(400).json({error:"invalid opportunity id"});
+  if(!pool)return res.status(201).json({ok:true,opportunity_id:opportunityId,status:"Applied"});
+  try{
+    const exists=await pool.query("SELECT id FROM opportunities WHERE id=$1",[opportunityId]);
+    if(!exists.rows[0])return res.status(404).json({error:"opportunity not found"});
+    const result=await pool.query("INSERT INTO applications(user_id,opportunity_id) VALUES($1,$2) ON CONFLICT(user_id,opportunity_id) DO NOTHING RETURNING id,status,applied_at",[user.id,opportunityId]);
+    res.status(result.rows[0]?201:200).json({ok:true,opportunity_id:opportunityId,applied:!!result.rows[0],...(result.rows[0]||{status:"Applied"})});
+  }catch(e){console.error("Application failed:",e);res.status(500).json({error:"unable to apply"});}
+});
+
+app.get("/api/me/applications", async (req,res) => {
+  const user=await getAuthUser(req); if(!user)return res.status(401).json({error:"authentication required"});
+  if(!pool)return res.json([]);
+  try{const {rows}=await pool.query(`
+    SELECT a.id,a.opportunity_id,o.type,o.title,o.category,o.description,a.status,a.applied_at
+    FROM applications a JOIN opportunities o ON o.id=a.opportunity_id
+    WHERE a.user_id=$1 ORDER BY a.applied_at DESC
+  `,[user.id]);res.json(rows);}
+  catch(e){res.status(500).json({error:"unable to load applications"});}
 });
 
 app.post("/api/users", async (req,res) => {
