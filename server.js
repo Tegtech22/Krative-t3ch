@@ -11,6 +11,41 @@ const pool = useDatabase ? new Pool({ connectionString: process.env.DATABASE_URL
 app.use(cors());
 app.use(express.json());
 
+const KRANOVA_KNOWLEDGE = [
+  {
+    id: "kranova.identity",
+    type: "product",
+    title: "Kranova",
+    content: "Kranova is a Krative T3ch learning and opportunity platform focused on skills, academic learning, courses, practical development, certification, jobs, freelance work, internships, scholarships, community and collaboration.",
+    answer: "Kranova is a Krative T3ch learning and opportunity platform. It brings learning, skills development, opportunities, community and collaboration together so people can move from discovering knowledge to learning, creating, teaching, collaborating, working and building.",
+    confidence: 0.98
+  },
+  {
+    id: "kranova.relationship",
+    type: "architecture",
+    title: "Kranova within Krative T3ch",
+    content: "Kranova is a platform within the Krative T3ch ecosystem. Learning is its DNA. Its journey is Discover Connect Learn Create Teach Collaborate Work Build. Kranova is separate from the Human Intelligence Network.",
+    answer: "Within Krative T3ch, Kranova is the learning-first platform layer. Its journey is Discover → Connect → Learn → Create → Teach → Collaborate → Work → Build. It is a platform for people and is separate from HIN, the Human Intelligence Network.",
+    confidence: 0.98
+  },
+  {
+    id: "kranova.intelligence",
+    type: "intelligence",
+    title: "Kranova Intelligence",
+    content: "Kranova Intelligence is the intelligence interface in Kranova. Authenticated requests are routed through the Kranova API to Krative Core for understanding, classification, knowledge retrieval, memory, fusion, reasoning, decision and execution.",
+    answer: "Kranova also provides an Intelligence interface. Questions are authenticated by the Kranova API and routed to Krative Core, where the request can pass through the intelligence pipeline for understanding, knowledge retrieval, fusion, reasoning, decision and execution.",
+    confidence: 0.96
+  },
+  {
+    id: "krative.positioning",
+    type: "ecosystem",
+    title: "Krative T3ch",
+    content: "Krative T3ch is the technology and innovation ecosystem behind projects such as Kranova, Krative Core and NOETICA Intelligence. Kranova is one platform within that broader ecosystem.",
+    answer: "Kranova is one platform within the broader Krative T3ch technology and innovation ecosystem. Krative T3ch provides the wider ecosystem and intelligence architecture, while Kranova focuses on learning, opportunity, human connection and building.",
+    confidence: 0.97
+  }
+];
+
 const memory = {
   users: [],
   sessions: new Map(),
@@ -121,7 +156,14 @@ app.post("/api/intelligence", async (req,res) => {
   if(!base||!key)return res.status(503).json({error:"Krative Core integration is not configured"});
   const input=String(req.body?.input||"").trim();if(!input)return res.status(400).json({error:"input is required"});
   try{
-    const r=await fetch(base+"/api/v1/intelligence",{method:"POST",headers:{"Content-Type":"application/json",Authorization:"Bearer "+key},body:JSON.stringify({input,context:{source:"kranova",user_id:user.id}})});
+    const r=await fetch(base+"/api/v1/intelligence",{method:"POST",headers:{"Content-Type":"application/json",Authorization:"Bearer "+key},body:JSON.stringify({
+      input,
+      context:{
+        source:"kranova",
+        user_id:user.id,
+        knowledgeSources: KRANOVA_KNOWLEDGE
+      }
+    })});
     const data=await r.json().catch(()=>({error:"invalid Core response"}));
     res.status(r.status).json(data);
   }catch(e){console.error("Krative Core request failed:",e);res.status(502).json({error:"unable to reach Krative Core"});}
