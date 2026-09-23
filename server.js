@@ -1,6 +1,7 @@
 const express = require("express");
 const cors = require("cors");
 const { Pool } = require("pg");
+const crypto = require("crypto");
 
 const app = express();
 const port = process.env.PORT || 10000;
@@ -12,6 +13,7 @@ app.use(express.json());
 
 const memory = {
   users: [],
+  sessions: new Map(),
   courses: [
     {id:1,category:"Technology",title:"Web Development Foundations",description:"Learn the foundations of building for the web.",level:"Beginner"},
     {id:2,category:"Intelligence",title:"Introduction to NOETICA Intelligence",description:"Explore intelligence in the Krative ecosystem.",level:"Foundation"},
@@ -31,7 +33,10 @@ const memory = {
 async function initDb() {
   if (!pool) return;
   await pool.query(`
-    CREATE TABLE IF NOT EXISTS users (id BIGSERIAL PRIMARY KEY,name TEXT NOT NULL,email TEXT UNIQUE NOT NULL,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
+    CREATE TABLE IF NOT EXISTS users (id BIGSERIAL PRIMARY KEY,name TEXT NOT NULL,email TEXT UNIQUE NOT NULL,password_hash TEXT,password_salt TEXT,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash TEXT;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS password_salt TEXT;
+    CREATE TABLE IF NOT EXISTS sessions (token_hash TEXT PRIMARY KEY,user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,expires_at TIMESTAMPTZ NOT NULL,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
     CREATE TABLE IF NOT EXISTS courses (id BIGSERIAL PRIMARY KEY,category TEXT NOT NULL,title TEXT NOT NULL,description TEXT NOT NULL,level TEXT NOT NULL,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
     CREATE TABLE IF NOT EXISTS opportunities (id BIGSERIAL PRIMARY KEY,type TEXT NOT NULL,title TEXT NOT NULL,category TEXT NOT NULL,description TEXT NOT NULL,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
   `);
@@ -67,6 +72,117 @@ app.post("/api/users", async (req,res) => {
     const {rows}=await pool.query("INSERT INTO users(name,email) VALUES($1,$2) RETURNING id,name,email,created_at",[String(name).trim(),String(email).trim().toLowerCase()]);
     res.status(201).json(rows[0]);
   } catch(e) { if(e.code==="23505") return res.status(409).json({error:"email already exists"}); res.status(500).json({error:"unable to create user"}); }
+});
+
+
+function normalizeEmail(email) { return String(email || "").trim().toLowerCase(); }
+function hashToken(token) { return crypto.createHash("sha256").update(token).digest("hex"); }
+function hashPassword(password, salt) {
+  return new Promise((resolve, reject) => crypto.scrypt(password, salt, 64, { N: 16384, r: 8, p: 1 }, (err, derived) => err ? reject(err) : resolve(derived.toString("hex"))));
+}
+async function verifyPassword(password, salt, expectedHash) {
+  const actual = await hashPassword(password, salt);
+  return crypto.timingSafeEqual(Buffer.from(actual, "hex"), Buffer.from(expectedHash, "hex"));
+}
+async function createSession(userId) {
+  const token = crypto.randomBytes(32).toString("hex");
+  const tokenHash = hashToken(token);
+  const expiresAt = new Date(Date.now() + 1000 * 60 * 60 * 24 * 30);
+  if (pool) await pool.query("INSERT INTO sessions(token_hash,user_id,expires_at) VALUES($1,$2,$3)", [tokenHash, userId, expiresAt]);
+  else memory.sessions.set(tokenHash, { userId, expires_at: expiresAt.toISOString() });
+  return token;
+}
+async function getAuthUser(req) {
+  const header = req.headers.authorization || "";
+  if (!header.startsWith("Bearer ")) return null;
+  const token = header.slice(7).trim();
+  if (!token) return null;
+  const tokenHash = hashToken(token);
+  if (pool) {
+    const { rows } = await pool.query(`
+      SELECT u.id,u.name,u.email,u.created_at
+      FROM sessions s JOIN users u ON u.id=s.user_id
+      WHERE s.token_hash=$1 AND s.expires_at > NOW()
+    `, [tokenHash]);
+    return rows[0] || null;
+  }
+  const session = memory.sessions.get(tokenHash);
+  if (!session || new Date(session.expires_at) <= new Date()) return null;
+  return memory.users.find(u => u.id === session.userId) || null;
+}
+
+app.post("/api/auth/signup", async (req,res) => {
+  const { name, email, password } = req.body || {};
+  const cleanName = String(name || "").trim();
+  const cleanEmail = normalizeEmail(email);
+  if (cleanName.length < 2 || !cleanEmail.includes("@") || String(password || "").length < 8)
+    return res.status(400).json({ error: "name, valid email, and password of at least 8 characters are required" });
+  const salt = crypto.randomBytes(16).toString("hex");
+  const passwordHash = await hashPassword(String(password), salt);
+  try {
+    let user;
+    if (pool) {
+      const { rows } = await pool.query(
+        "INSERT INTO users(name,email,password_hash,password_salt) VALUES($1,$2,$3,$4) RETURNING id,name,email,created_at",
+        [cleanName, cleanEmail, passwordHash, salt]
+      );
+      user = rows[0];
+    } else {
+      if (memory.users.some(u => u.email === cleanEmail)) return res.status(409).json({ error: "email already exists" });
+      user = { id: memory.users.length + 1, name: cleanName, email: cleanEmail, password_hash: passwordHash, password_salt: salt, created_at: new Date().toISOString() };
+      memory.users.push(user);
+    }
+    const token = await createSession(user.id);
+    res.status(201).json({ user: { id:user.id,name:user.name,email:user.email,created_at:user.created_at }, token });
+  } catch (e) {
+    if (e.code === "23505") return res.status(409).json({ error: "email already exists" });
+    console.error("Signup failed:", e);
+    res.status(500).json({ error: "unable to create account" });
+  }
+});
+
+app.post("/api/auth/login", async (req,res) => {
+  const cleanEmail = normalizeEmail(req.body && req.body.email);
+  const password = String((req.body && req.body.password) || "");
+  if (!cleanEmail || !password) return res.status(400).json({ error: "email and password are required" });
+  try {
+    let user;
+    if (pool) {
+      const { rows } = await pool.query("SELECT id,name,email,password_hash,password_salt,created_at FROM users WHERE email=$1", [cleanEmail]);
+      user = rows[0];
+    } else {
+      user = memory.users.find(u => u.email === cleanEmail);
+    }
+    if (!user || !user.password_hash || !user.password_salt || !(await verifyPassword(password, user.password_salt, user.password_hash)))
+      return res.status(401).json({ error: "invalid email or password" });
+    const token = await createSession(user.id);
+    res.json({ user:{id:user.id,name:user.name,email:user.email,created_at:user.created_at}, token });
+  } catch (e) {
+    console.error("Login failed:", e);
+    res.status(500).json({ error: "unable to sign in" });
+  }
+});
+
+app.get("/api/auth/me", async (req,res) => {
+  try {
+    const user = await getAuthUser(req);
+    if (!user) return res.status(401).json({ error: "authentication required" });
+    res.json({ user });
+  } catch (e) {
+    console.error("Auth check failed:", e);
+    res.status(500).json({ error: "unable to verify session" });
+  }
+});
+
+app.post("/api/auth/logout", async (req,res) => {
+  const header = req.headers.authorization || "";
+  const token = header.startsWith("Bearer ") ? header.slice(7).trim() : "";
+  if (token) {
+    const tokenHash = hashToken(token);
+    if (pool) await pool.query("DELETE FROM sessions WHERE token_hash=$1", [tokenHash]);
+    else memory.sessions.delete(tokenHash);
+  }
+  res.json({ ok:true });
 });
 
 app.get("/api/users/:id", async (req,res) => {
