@@ -35,7 +35,7 @@
 
 <section id="community" class="view"><div class="eyebrow">Community</div><h1>People make learning move.</h1><p class="lead">Kranova connects people around learning, teaching, creation, collaboration and building.</p><div class="cards"><div class="card"><span class="tag">COMMUNITIES</span><h3>Join communities</h3><p>Find spaces around subjects, skills, projects and shared interests.</p></div><div class="card"><span class="tag">TEACH</span><h3>Share what you know</h3><p>Turn your knowledge and experience into something other people can learn from.</p></div><div class="card"><span class="tag">COLLABORATE</span><h3>Build together</h3><p>Meet people, form teams and work on practical ideas and projects.</p></div></div><div class="panel" style="margin-top:18px"><h3>Community foundation</h3><p class="muted">The product is designed around human connection and learning—not just content consumption.</p></div></section>
 
-<section id="dashboard" class="view"><div class="eyebrow">My Kranova</div><h1>Your progress.</h1><p class="lead">A personal space for learning progress and the next steps in your Kranova journey.</p><div class="profile"><div class="stat"><span class="muted">Learning progress</span><strong id="progress">0%</strong><span class="muted">Progress is calculated from lessons you complete.</span></div><div class="stat"><span class="muted">Journey</span><strong>Discover → Build</strong><span class="muted">Connect, learn, create, teach, collaborate and work.</span></div></div><div class="cards" id="enrollmentList" style="margin-top:18px"><div class="empty">Sign in to see your enrolled courses.</div></div><div class="panel" style="margin-top:18px"><h3>Community feed</h3><div class="actions"><textarea id="postContent" placeholder="Share something you are learning, creating or building..." style="width:100%;min-height:90px"></textarea><button class="btn primary" onclick="createPost()">Post</button></div><div id="communityFeed"><div class="empty">Sign in to join the community.</div></div></div><div class="panel" style="margin-top:18px"><h3>My applications</h3><div id="applicationList"><div class="empty">Sign in to see your applications.</div></div></div><div class="panel" style="margin-top:18px"><h3>Current foundation</h3><p class="muted">The Kranova API and PostgreSQL database are active. Your enrolled courses and lesson completion are stored persistently.</p></div></section>
+<section id="dashboard" class="view"><div class="eyebrow">My Kranova</div><h1>Your progress.</h1><p class="lead">A personal space for learning progress and the next steps in your Kranova journey.</p><div class="profile"><div class="stat"><span class="muted">Learning progress</span><strong id="progress">0%</strong><span class="muted">Progress is calculated from lessons you complete.</span></div><div class="stat"><span class="muted">Journey</span><strong>Discover → Build</strong><span class="muted">Connect, learn, create, teach, collaborate and work.</span></div></div><div class="cards" id="enrollmentList" style="margin-top:18px"><div class="empty">Sign in to see your enrolled courses.</div></div><div class="panel" style="margin-top:18px"><h3>My profile</h3><div class="actions"><input id="profileSkills" placeholder="Skills"><input id="profileGoals" placeholder="Learning goals"><textarea id="profileBio" placeholder="Tell the community about yourself" style="width:100%;min-height:70px"></textarea><button class="btn primary" onclick="saveProfile()">Save profile</button></div><div id="profileMsg" class="muted"></div></div><div class="panel" style="margin-top:18px"><h3>Community members</h3><div id="memberList"><div class="empty">Sign in to discover members.</div></div></div><div class="panel" style="margin-top:18px"><h3>Community feed</h3><div class="actions"><textarea id="postContent" placeholder="Share something you are learning, creating or building..." style="width:100%;min-height:90px"></textarea><button class="btn primary" onclick="createPost()">Post</button></div><div id="communityFeed"><div class="empty">Sign in to join the community.</div></div></div><div class="panel" style="margin-top:18px"><h3>My applications</h3><div id="applicationList"><div class="empty">Sign in to see your applications.</div></div></div><div class="panel" style="margin-top:18px"><h3>Current foundation</h3><p class="muted">The Kranova API and PostgreSQL database are active. Your enrolled courses and lesson completion are stored persistently.</p></div></section>
 </main>
 <div class="auth-modal" id="authModal"><div class="auth-box">
 <h2 id="authTitle">Sign in to Kranova</h2>
@@ -114,6 +114,26 @@ async function openOpportunity(id){
   }catch(e){msg.textContent=e.message;}
 }
 function closeOpportunity(){document.getElementById("oppModal").style.display="none";}
+async function loadProfile(){
+  if(!authToken)return;
+  const r=await fetch(API_BASE+"/api/me/profile",{headers:{Authorization:"Bearer "+authToken}});if(!r.ok)return;const d=await r.json();
+  profileBio.value=d.bio||"";profileSkills.value=d.skills||"";profileGoals.value=d.learning_goals||"";
+}
+async function saveProfile(){
+  const r=await fetch(API_BASE+"/api/me/profile",{method:"PUT",headers:{"Content-Type":"application/json",Authorization:"Bearer "+authToken},body:JSON.stringify({bio:profileBio.value,skills:profileSkills.value,learning_goals:profileGoals.value})});
+  const d=await r.json();profileMsg.textContent=r.ok?"Profile saved.":(d.error||"Unable to save profile");
+}
+async function loadMembers(){
+  if(!authToken)return;const r=await fetch(API_BASE+"/api/community/users",{headers:{Authorization:"Bearer "+authToken}});if(!r.ok)return;const d=await r.json();
+  memberList.innerHTML=d.length?d.map(u=>'<article class="card" style="margin-top:10px"><strong>'+escapeHtml(u.name)+'</strong><p>'+escapeHtml(u.bio||"Kranova member")+'</p><small class="muted">'+escapeHtml(u.skills||"Skills not added yet")+'</small><div class="actions"><button class="pill" onclick="connectMember('+u.id+')">Connect</button></div></article>').join(""):'<div class="empty">No other members yet.</div>';
+}
+async function connectMember(id){
+  const r=await fetch(API_BASE+"/api/community/connections/"+id,{method:"POST",headers:{Authorization:"Bearer "+authToken}});const d=await r.json();alert(r.ok?(d.requested===false?"Connection request already sent.":"Connection request sent."):d.error||"Unable to connect");loadConnections();
+}
+async function loadConnections(){
+  if(!authToken)return;const r=await fetch(API_BASE+"/api/me/connections",{headers:{Authorization:"Bearer "+authToken}});if(!r.ok)return;const d=await r.json();
+  const el=document.getElementById("memberList");if(d.length)el.insertAdjacentHTML("afterbegin",'<div class="muted" style="margin-bottom:10px">Connections: '+d.map(x=>escapeHtml(x.name)+" ("+escapeHtml(x.status)+")").join(", ")+'</div>');
+}
 async function loadCommunity(){
   const box=document.getElementById("communityFeed");if(!box)return;
   if(!authToken){box.innerHTML='<div class="empty">Sign in to join the community.</div>';return;}
@@ -174,7 +194,7 @@ async function loadEnrollments(){
     document.getElementById("enrollmentList").innerHTML=data.length?data.map(c=>'<div class="card"><span class="tag">'+c.category+'</span><h3>'+c.title+'</h3><p>'+(c.progress||0)+'% complete'+(Number(c.progress)===100?" · Completed":"")+'</p><div style="height:8px;background:var(--bg);border-radius:8px;overflow:hidden;margin:12px 0"><div style="height:100%;width:'+(c.progress||0)+'%;background:var(--blue)"></div></div><button class="pill" onclick="openLessons('+c.id+')">Open lessons</button></div>').join(""):'<div class="empty">You have not enrolled in a course yet.</div>';
   }catch(e){console.warn("Could not load enrollments",e);}
 }
-async function restoreAuth(){if(!authToken)return;try{const res=await fetch(API_BASE+"/api/auth/me",{headers:{Authorization:"Bearer "+authToken}});if(!res.ok)throw new Error();const data=await res.json();setAuth(data.user,authToken);loadEnrollments();loadApplications();loadCommunity();}catch{localStorage.removeItem("kranova_token");authToken="";}}
+async function restoreAuth(){if(!authToken)return;try{const res=await fetch(API_BASE+"/api/auth/me",{headers:{Authorization:"Bearer "+authToken}});if(!res.ok)throw new Error();const data=await res.json();setAuth(data.user,authToken);loadEnrollments();loadApplications();loadProfile();loadCommunity();loadMembers();}catch{localStorage.removeItem("kranova_token");authToken="";}}
 
 async function syncBackend(){
   try{
