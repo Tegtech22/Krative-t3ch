@@ -64,6 +64,18 @@ document.getElementById('theme').onclick=()=>document.body.classList.toggle('lig
 document.getElementById('courseSearch').oninput=e=>renderCourses(e.target.value);
 document.querySelectorAll('#oppTabs button').forEach(b=>b.onclick=()=>{document.querySelectorAll('#oppTabs button').forEach(x=>x.classList.remove('active'));b.classList.add('active');renderOpp(b.dataset.filter)});
 renderCourses();renderOpp();
+const API_BASE="https://kranova-api.onrender.com";
+async function syncBackend(){
+  try{
+    const [courseRes,oppRes]=await Promise.all([fetch(API_BASE+"/api/courses"),fetch(API_BASE+"/api/opportunities")]);
+    if(!courseRes.ok||!oppRes.ok) throw new Error("API unavailable");
+    const apiCourses=await courseRes.json(),apiOpps=await oppRes.json();
+    courses.splice(0,courses.length,...apiCourses.map(c=>[c.category,c.title,c.description,c.level]));
+    opportunities.splice(0,opportunities.length,...apiOpps.map(o=>[o.type,o.title,o.category,o.description]));
+    renderCourses();renderOpp();
+  }catch(e){console.warn("Kranova API unavailable; using bundled demo data.",e)}
+}
+syncBackend();
 </script>
 </body>
 </html>
