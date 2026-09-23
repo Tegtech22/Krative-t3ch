@@ -168,44 +168,51 @@ app.post("/api/intelligence", async (req,res) => {
         const {rows}=await pool.query("SELECT id,knowledge_key,category,title,content,answer,source,verified,active FROM knowledge WHERE active=true AND verified=true ORDER BY updated_at DESC,id DESC");
         if(rows.length){
           const normalizeText=value=>String(value||"").toLowerCase().replace(/[^a-z0-9\\s]/g," ").replace(/\\s+/g," ").trim();
-          const stopWords=new Set(["the","and","for","with","what","who","how","why","when","where","is","are","can","does","do","on","in","of","to","a","an","this","that","it"]);
+          const stopWords=new Set(["the","and","for","with","what","who","how","why","when","where","is","are","can","does","do","on","in","of","to","a","an","this","that","it","tell","me","about","please"]);
           const queryTokens=normalizeText(input).split(" ").filter(t=>t.length>1&&!stopWords.has(t));
+          const queryText=normalizeText(input);
           const scored=rows.map(k=>{
             const title=normalizeText(k.title),category=normalizeText(k.category),content=normalizeText(k.content),answer=normalizeText(k.answer);
-            const haystack=title+" "+category+" "+content+" "+answer;
-            let score=0;
+            const titleTokens=new Set(title.split(" ").filter(Boolean));
+            const categoryTokens=new Set(category.split(" ").filter(Boolean));
+            const contentTokens=new Set(content.split(" ").filter(Boolean));
+            const answerTokens=new Set(answer.split(" ").filter(Boolean));
+            let score=0,matched=0;
             for(const token of queryTokens){
-              if(title.split(" ").includes(token)) score+=8;
-              if(category.split(" ").includes(token)) score+=4;
-              if(content.includes(token)) score+=2;
-              if(answer.includes(token)) score+=3;
+              let hit=false;
+              if(titleTokens.has(token)){score+=10;hit=true;}
+              if(categoryTokens.has(token)){score+=5;hit=true;}
+              if(contentTokens.has(token)){score+=2;hit=true;}
+              if(answerTokens.has(token)){score+=3;hit=true;}
+              if(hit) matched++;
             }
-            const exactTitle=queryTokens.length>0 && queryTokens.every(t=>title.includes(t));
-            if(exactTitle) score+=12;
-            return {k,score};
-          }).sort((a,b)=>b.score-a.score||Number(b.k.id)-Number(a.k.id));
-          const relevant=scored.filter(x=>x.score>0).slice(0,5);
+            if(queryTokens.length>1){
+              const phrase=queryTokens.join(" ");
+              if(title.includes(phrase)) score+=24;
+              if(content.includes(phrase)) score+=10;
+              if(answer.includes(phrase)) score+=12;
+            }
+            if(title && queryText.includes(title)) score+=20;
+            const coverage=queryTokens.length ? matched/queryTokens.length : 0;
+            if(coverage===1) score+=12;
+            else if(coverage>=0.5) score+=5;
+            return {k,score,coverage};
+          }).sort((a,b)=>b.score-a.score||b.coverage-a.coverage||Number(b.k.id)-Number(a.k.id));
+          const relevant=scored.filter(x=>x.score>0 && (x.coverage>=0.25 || x.score>=12)).slice(0,5);
           if(relevant.length){
-            knowledgeSources=relevant.map(({k,score})=>({
+            knowledgeSources=relevant.map(({k,score,coverage})=>({
               id:k.knowledge_key||String(k.id),
               type:k.category||"general",
               title:k.title,
               content:k.content,
               answer:k.answer||k.content,
-              confidence:Math.min(0.99,0.90+Math.min(score,9)*0.01)
+              confidence:Math.min(0.99,0.90+Math.min(score,9)*0.01),
+              relevance:Math.round(coverage*100)/100
             }));
           } else {
-            knowledgeSources=rows.slice(0,5).map(k=>({
-              id:k.knowledge_key||String(k.id),
-              type:k.category||"general",
-              title:k.title,
-              content:k.content,
-              answer:k.answer||k.content,
-              confidence:0.90
-            }));
+            knowledgeSources=[];
           }
-        }
-      }catch(knowledgeError){
+        }      }catch(knowledgeError){
         console.warn("Kranova Knowledge Centre retrieval failed; using verified foundation knowledge:",knowledgeError.message);
       }
     }
