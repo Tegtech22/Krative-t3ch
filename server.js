@@ -443,11 +443,11 @@ app.post("/api/auth/signup", async (req,res) => {
       user = rows[0];
     } else {
       if (memory.users.some(u => u.email === cleanEmail)) return res.status(409).json({ error: "email already exists" });
-      user = { id: memory.users.length + 1, name: cleanName, email: cleanEmail, password_hash: passwordHash, password_salt: salt, created_at: new Date().toISOString() };
+      user = { id: memory.users.length + 1, name: cleanName, email: cleanEmail, role: memory.users.length===0 ? "super_admin" : "user", password_hash: passwordHash, password_salt: salt, created_at: new Date().toISOString() };
       memory.users.push(user);
     }
     const token = await createSession(user.id);
-    res.status(201).json({ user: { id:user.id,name:user.name,email:user.email,created_at:user.created_at }, token });
+    res.status(201).json({ user: { id:user.id,name:user.name,email:user.email,role:user.role||"user",created_at:user.created_at }, token });
   } catch (e) {
     if (e.code === "23505") return res.status(409).json({ error: "email already exists" });
     console.error("Signup failed:", e);
