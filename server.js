@@ -268,7 +268,8 @@ app.post("/api/intelligence", async (req,res) => {
         }
       }catch(knowledgeError){console.warn("Kranova Knowledge Centre retrieval failed; using verified foundation knowledge:",knowledgeError.message);}
     }
-    const r=await fetch(base+"/api/v1/intelligence",{method:"POST",headers:{"Content-Type":"application/json",Authorization:"Bearer "+key},body:JSON.stringify({input,context:{source:"kranova",user_id:user.id,knowledgeSources,conversationMemory,structuredMemory}})});
+    const memoryContext=structuredMemory.map(m=>({content:`${m.memory_type}/${m.key}: ${m.value}`,importance:Number(m.confidence)||0.8,source:m.source}));
+    const r=await fetch(base+"/api/v1/intelligence",{method:"POST",headers:{"Content-Type":"application/json",Authorization:"Bearer "+key},body:JSON.stringify({input,context:{source:"kranova",user_id:user.id,knowledgeSources,conversationMemory,shortTermMemory:memoryContext,structuredMemory}})});
     const data=await r.json().catch(()=>({error:"invalid Core response"}));
     if(!r.ok)return res.status(r.status).json(data);
     let reply="";
