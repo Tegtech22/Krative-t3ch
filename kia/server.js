@@ -7,6 +7,17 @@ const PORT = Number(process.env.PORT || 10000);
 const ACCESS_CODE = process.env.KIA_ACCESS_CODE || '';
 const CORE_URL = (process.env.KRATIVE_CORE_BASE_URL || 'https://krative-core.onrender.com').replace(/\/$/, '');
 const CORE_API_KEY = process.env.KRATIVE_CORE_API_KEY || '';
+const DATABASE_URL = process.env.DATABASE_URL || process.env.KRANOVA_DATABASE_URL || '';
+
+if (!DATABASE_URL) {
+  throw new Error('DATABASE_URL or KRANOVA_DATABASE_URL must be configured for persistent KIA accounts.');
+}
+
+const { Pool } = require('pg');
+const pool = new Pool({
+  connectionString: DATABASE_URL,
+  ssl: { rejectUnauthorized: false }
+});
 
 app.use(express.json({limit:'1mb'}));
 app.use(express.static(path.join(__dirname,'public')));
@@ -92,6 +103,50 @@ function publicUser(u){
   };
 }
 
+async function initDatabase(){
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS kia_users (
+      id UUID PRIMARY KEY,
+      name TEXT NOT NULL,
+      email TEXT NOT NULL UNIQUE,
+      phone TEXT NOT NULL,
+      department TEXT NOT NULL,
+      staff_id TEXT NOT NULL UNIQUE,
+      password_hash TEXT NOT NULL,
+      role TEXT NOT NULL DEFAULT 'staff',
+      status TEXT NOT NULL DEFAULT 'pending',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      approved_at TIMESTAMPTZ
+    )
+  `);
+}
+
+async function loadUsers(){
+  users.clear();
+  const {rows}=await pool.query('SELECT * FROM kia_users ORDER BY created_at DESC');
+  for(const u of rows){
+    users.set(u.id,{
+      id:u.id,name:u.name,email:u.email,phone:u.phone,department:u.department,
+      staffId:u.staff_id,passwordHash:u.password_hash,role:u.role,status:u.status,
+      createdAt:u.created_at.toISOString(),approvedAt:u.approved_at?u.approved_at.toISOString():null
+    });
+  }
+}
+
+async function saveUser(u){
+  await pool.query(
+    `INSERT INTO kia_users
+      (id,name,email,phone,department,staff_id,password_hash,role,status,created_at,approved_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+     ON CONFLICT (id) DO UPDATE SET
+      name=EXCLUDED.name,email=EXCLUDED.email,phone=EXCLUDED.phone,
+      department=EXCLUDED.department,staff_id=EXCLUDED.staff_id,
+      password_hash=EXCLUDED.password_hash,role=EXCLUDED.role,
+      status=EXCLUDED.status,approved_at=EXCLUDED.approved_at`,
+    [u.id,u.name,u.email,u.phone,u.department,u.staffId,u.passwordHash,u.role,u.status,u.createdAt,u.approvedAt||null]
+  );
+}
+
 app.get('/health',(req,res)=>res.json({
   status:'ok',
   service:'kia',
@@ -152,6 +207,7 @@ app.post('/api/signup',async(req,res)=>{
       status:'pending',
       createdAt:new Date().toISOString()
     };
+    await saveUser(user);
     users.set(user.id,user);
     record({staffId:'public-signup'},'AUTH_SIGNUP','staff_signup',{userId:user.id,email,department});
     res.status(201).json({
@@ -219,6 +275,11 @@ app.post('/api/admin/users/:id/approve',requireAuth,requireAdmin,(req,res)=>{
   if(!u) return res.status(404).json({error:'User not found.'});
   u.status='approved';
   u.approvedAt=new Date().toISOString();
+  try{
+    await saveUser(u);
+  }catch(error){
+    return res.status(500).json({error:'Unable to save approval.'});
+  }
   record(req.session,'AUTH_APPROVAL','approve_staff',{userId:u.id});
   res.json({success:true,user:publicUser(u)});
 });
@@ -227,6 +288,11 @@ app.post('/api/admin/users/:id/reject',requireAuth,requireAdmin,(req,res)=>{
   const u=users.get(req.params.id);
   if(!u) return res.status(404).json({error:'User not found.'});
   u.status='rejected';
+  try{
+    await saveUser(u);
+  }catch(error){
+    return res.status(500).json({error:'Unable to save rejection.'});
+  }
   record(req.session,'AUTH_REJECTION','reject_staff',{userId:u.id});
   res.json({success:true,user:publicUser(u)});
 });
@@ -273,4 +339,12 @@ app.post('/api/knowledge',requireAuth,(req,res)=>{
 app.get('/api/audit',requireAuth,(req,res)=>res.json({items:audit}));
 
 app.get(/.*/,(req,res)=>res.sendFile(path.join(__dirname,'public','index.html')));
-app.listen(PORT,'0.0.0.0',()=>console.log('KIA listening on '+PORT));
+initDatabase()
+  .then(loadUsers)
+  .then(()=>{
+    app.listen(PORT,'0.0.0.0',()=>console.log('KIA listening on '+PORT));
+  })
+  .catch(error=>{
+    console.error('KIA database initialization failed:',error);
+    process.exit(1);
+  });
