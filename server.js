@@ -162,7 +162,13 @@ app.get("/api/me/connections", async (req,res) => {
   if(!pool)return res.json([]);
   try{const {rows}=await pool.query("SELECT c.id,c.status,c.requester_id,c.receiver_id,u.name FROM connections c JOIN users u ON u.id=CASE WHEN c.requester_id=$1 THEN c.receiver_id ELSE c.requester_id END WHERE c.requester_id=$1 OR c.receiver_id=$1 ORDER BY c.created_at DESC",[user.id]);res.json(rows);}catch(e){res.status(500).json({error:"unable to load connections"});}
 });
-app.get("/api/intelligence/memory", async (req,res) => {\n  const user=await getAuthUser(req);if(!user)return res.status(401).json({error:"authentication required"});\n  if(!pool)return res.json([]);\n  try{const {rows}=await pool.query("SELECT id,memory_type,key,value,source,confidence,updated_at FROM intelligence_memory WHERE user_id=$1 ORDER BY updated_at DESC,id DESC LIMIT 100",[user.id]);res.json(rows);}catch(e){res.status(500).json({error:"unable to load intelligence memory"});}\n});\n\napp.delete("/api/intelligence/memory/:id", async (req,res) => {
+app.get("/api/intelligence/memory", async (req,res) => {
+  const user=await getAuthUser(req);if(!user)return res.status(401).json({error:"authentication required"});
+  if(!pool)return res.json([]);
+  try{const {rows}=await pool.query("SELECT id,memory_type,key,value,source,confidence,updated_at FROM intelligence_memory WHERE user_id=$1 ORDER BY updated_at DESC,id DESC LIMIT 100",[user.id]);res.json(rows);}catch(e){res.status(500).json({error:"unable to load intelligence memory"});}
+});
+
+app.delete("/api/intelligence/memory/:id", async (req,res) => {
   const user=await getAuthUser(req);if(!user)return res.status(401).json({error:"authentication required"});
   if(!pool)return res.status(404).json({error:"memory not available"});
   const id=Number(req.params.id);if(!Number.isInteger(id))return res.status(400).json({error:"invalid memory id"});
