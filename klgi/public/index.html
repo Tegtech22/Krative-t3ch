@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>KLGI — Krative LeadGen Intelligence</title>
+<style>
+*{box-sizing:border-box}body{margin:0;font-family:Inter,system-ui,sans-serif;background:#07111f;color:#eef4ff}header{padding:24px 5%;border-bottom:1px solid #20314b;display:flex;justify-content:space-between;align-items:center}h1{margin:0;font-size:24px}small,.muted{color:#9fb0c8}.badge{padding:6px 10px;border:1px solid #2d4668;border-radius:999px;font-size:12px}.wrap{width:min(1180px,92%);margin:28px auto}.grid{display:grid;grid-template-columns:1fr 1fr;gap:18px}.card{background:#0d1b2d;border:1px solid #203653;border-radius:16px;padding:20px}label{display:block;font-size:12px;color:#aebed3;margin:12px 0 6px}input,textarea,select{width:100%;padding:11px;border-radius:10px;border:1px solid #304765;background:#081525;color:#fff}button{margin-top:14px;padding:11px 16px;border:0;border-radius:10px;background:#d5a83b;color:#08111d;font-weight:700;cursor:pointer}.row{display:flex;gap:10px;flex-wrap:wrap}.row>*{flex:1}.item{padding:14px 0;border-top:1px solid #20314b}.score{font-size:24px;font-weight:800}.verified{color:#75d69c}.hyp{color:#d7b867}.danger{color:#ff9a9a}.full{grid-column:1/-1}@media(max-width:800px){.grid{grid-template-columns:1fr}}
+</style></head><body>
+<header><div><h1>KLGI</h1><small>Krative LeadGen Intelligence · Need Before Demand</small></div><span id="status" class="badge">offline</span></header>
+<div class="wrap">
+<div class="card"><h2>Intelligence Access</h2><div class="row"><input id="key" type="password" placeholder="KLGI admin key"><button onclick="load()">Connect</button></div><p id="msg" class="muted"></p></div>
+<div class="grid">
+<section class="card"><h2>Collect Signal</h2>
+<label>Signal title</label><input id="title" placeholder="e.g. Customers repeatedly report delayed fulfillment">
+<label>Description</label><textarea id="description" rows="4"></textarea>
+<div class="row"><div><label>Source</label><input id="source" placeholder="Interview, support, news, search..."></div><div><label>Industry</label><input id="industry" placeholder="Retail"></div></div>
+<div class="row"><div><label>Geography</label><input id="geo" placeholder="Nigeria"></div><div><label>Signal type</label><select id="type"><option>customer-pain</option><option>complaint</option><option>behavior</option><option>market-change</option><option>search-trend</option><option>news</option><option>operational</option><option>other</option></select></div></div>
+<label>Strength (0–1)</label><input id="strength" type="number" min="0" max="1" step=".1" value=".7">
+<label><input id="verified" type="checkbox" style="width:auto"> Verified evidence</label>
+<button onclick="addSignal()">Add Signal</button></section>
+<section class="card"><h2>Need Before Demand</h2><p class="muted">KLGI clusters repeated signals, separates evidence from hypotheses, and prioritizes emerging problems. It does not call a hypothesis a lead until validation.</p><button onclick="analyze()">Analyze Signals</button><div id="analysis"></div></section>
+<section class="card full"><h2>Signals</h2><div id="signals" class="muted">Connect to load.</div></section>
+<section class="card full"><h2>Opportunities / Emerging Needs</h2><div id="opps" class="muted">No analysis yet.</div></section>
+</div></div>
+<script>
+let key='';
+const el=id=>document.getElementById(id);
+async function api(url,opt={}){opt.headers={...(opt.headers||{}),'x-klgi-key':key,'Content-Type':'application/json'};const r=await fetch(url,opt);const d=await r.json();if(!r.ok)throw Error(d.error||'Request failed');return d}
+async function load(){key=el('key').value.trim();if(!key)return;try{const d=await api('/api/dashboard');el('status').textContent=d.meta.databaseConfigured?'LIVE · DB':'LIVE · TEMP STORAGE';el('msg').textContent=d.meta.coreConfigured?'NOETICA/Core connected':'Core key not configured yet';render(d)}catch(e){el('msg').textContent=e.message;el('status').textContent='access denied'}}
+function render(d){el('signals').innerHTML=d.signals.length?d.signals.map(s=>'<div class="item"><b>'+esc(s.title)+'</b><div class="muted">'+esc(s.source)+' · '+esc(s.industry||'general')+' · strength '+s.strength+'</div><p>'+esc(s.description)+'</p><span class="'+(s.verified?'verified':'danger')+'">'+(s.verified?'VERIFIED':'UNVERIFIED')+'</span></div>').join(''):'No signals yet.';el('opps').innerHTML=d.opportunities.length?d.opportunities.map(o=>'<div class="item"><div class="row"><div><b>'+esc(o.problem)+'</b><p class="hyp">'+esc(o.hypothesis||'')+'</p></div><div class="score">'+o.priority+'<small>/100 priority</small><br>'+o.confidence+'<small>% confidence</small></div></div><div class="muted">Evidence: '+(o.evidence?.length||0)+' · status: '+esc(o.status)+'</div></div>').join(''):'No emerging need candidates yet.'}
+async function addSignal(){try{await api('/api/signals',{method:'POST',body:JSON.stringify({title:el('title').value,description:el('description').value,source:el('source').value,industry:el('industry').value,geography:el('geo').value,signalType:el('type').value,strength:el('strength').value,verified:el('verified').checked})});['title','description','source','industry','geo'].forEach(x=>el(x).value='');await load()}catch(e){el('msg').textContent=e.message}}
+async function analyze(){try{const d=await api('/api/analyze',{method:'POST',body:'{}'});el('analysis').innerHTML='<p class="muted">Generated '+d.candidates.length+' candidate needs. Core: '+(d.core.reachable?'connected':'local heuristic')+'</p>';await load()}catch(e){el('msg').textContent=e.message}}
+function esc(s){return String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]))}
+</script></body></html>
