@@ -233,6 +233,13 @@ app.post("/api/intelligence", async (req,res) => {
       );
       const memoryRows=await pool.query("SELECT memory_type,key,value,source,confidence FROM intelligence_memory WHERE user_id=$1 ORDER BY updated_at DESC,id DESC LIMIT 50",[user.id]);
       structuredMemory=memoryRows.rows;
+      // Build a compact personalization context so Krative Core can use memory operationally.
+      const personalContext=structuredMemory.map(m=>{
+        let value=m.value;
+        try{const parsed=JSON.parse(value);value=parsed.title?parsed.title+" ("+(parsed.progress??0)+"% complete)":(parsed.courses?parsed.courses.map(x=>x.title+" ("+(x.progress??0)+"%)").join(", "):value);}catch{}
+        return {type:m.memory_type,key:m.key,value:String(value).slice(0,300),source:m.source};
+      });
+      structuredMemory.push({memory_type:"personalization_context",key:"user_context",value:JSON.stringify(personalContext),source:"kranova_memory",confidence:0.980});
       const {rows}=await pool.query("SELECT role,content FROM intelligence_messages WHERE thread_id=$1 ORDER BY created_at DESC,id DESC LIMIT 12",[threadId]);
       conversationMemory=rows.reverse();
     }
