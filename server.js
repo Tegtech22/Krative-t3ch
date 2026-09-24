@@ -162,7 +162,17 @@ app.get("/api/me/connections", async (req,res) => {
   if(!pool)return res.json([]);
   try{const {rows}=await pool.query("SELECT c.id,c.status,c.requester_id,c.receiver_id,u.name FROM connections c JOIN users u ON u.id=CASE WHEN c.requester_id=$1 THEN c.receiver_id ELSE c.requester_id END WHERE c.requester_id=$1 OR c.receiver_id=$1 ORDER BY c.created_at DESC",[user.id]);res.json(rows);}catch(e){res.status(500).json({error:"unable to load connections"});}
 });
-app.get("/api/intelligence/memory", async (req,res) => {\n  const user=await getAuthUser(req);if(!user)return res.status(401).json({error:"authentication required"});\n  if(!pool)return res.json([]);\n  try{const {rows}=await pool.query("SELECT id,memory_type,key,value,source,confidence,updated_at FROM intelligence_memory WHERE user_id=$1 ORDER BY updated_at DESC,id DESC LIMIT 100",[user.id]);res.json(rows);}catch(e){res.status(500).json({error:"unable to load intelligence memory"});}\n});\n\napp.get("/api/intelligence/history", async (req,res) => {
+app.get("/api/intelligence/memory", async (req,res) => {\n  const user=await getAuthUser(req);if(!user)return res.status(401).json({error:"authentication required"});\n  if(!pool)return res.json([]);\n  try{const {rows}=await pool.query("SELECT id,memory_type,key,value,source,confidence,updated_at FROM intelligence_memory WHERE user_id=$1 ORDER BY updated_at DESC,id DESC LIMIT 100",[user.id]);res.json(rows);}catch(e){res.status(500).json({error:"unable to load intelligence memory"});}\n});\n\napp.delete("/api/intelligence/memory/:id", async (req,res) => {
+  const user=await getAuthUser(req);if(!user)return res.status(401).json({error:"authentication required"});
+  if(!pool)return res.status(404).json({error:"memory not available"});
+  const id=Number(req.params.id);if(!Number.isInteger(id))return res.status(400).json({error:"invalid memory id"});
+  try{
+    const {rows}=await pool.query("DELETE FROM intelligence_memory WHERE id=$1 AND user_id=$2 AND memory_type NOT IN ('learning_course','learning_summary') RETURNING id",[id,user.id]);
+    if(!rows[0])return res.status(404).json({error:"memory cannot be removed or was not found"});
+    res.json({ok:true});
+  }catch(e){res.status(500).json({error:"unable to remove intelligence memory"});}
+});
+app.get("/api/intelligence/history", async (req,res) => {
   const user=await getAuthUser(req);if(!user)return res.status(401).json({error:"authentication required"});
   if(!pool)return res.json({thread_id:null,messages:[]});
   try{
@@ -265,7 +275,7 @@ app.post("/api/intelligence", async (req,res) => {
     if(pool){
       await pool.query("INSERT INTO intelligence_messages(thread_id,role,content) VALUES($1,'user',$2),($1,'assistant',$3)",[threadId,input,reply]);
       await pool.query("UPDATE intelligence_threads SET updated_at=NOW() WHERE id=$1",[threadId]);
-      const patterns=[[ /\bmy name is ([a-z][a-z '\-]{1,80})/i,'identity','name'],[ /\bi am learning ([a-z0-9 .,'&\-]{2,100})/i,'learning','current_subject'],[ /\bi(?:'m| am) interested in ([a-z0-9 .,'&\-]{2,100})/i,'interest','topic'],[ /\bmy goal is to ([a-z0-9 .,'&\-]{2,120})/i,'goal','primary_goal'] ];
+      const patterns=[[ /\bmy name is ([a-z][a-z '\-]{1,80}?)(?=\s*[.!?,;]|\s*$)/i,'identity','name'],[ /\bi am learning ([a-z0-9 .,'&\-]{2,100}?)(?=\s*[.!?,;]|\s*$)/i,'learning','current_subject'],[ /\bi(?:'m|’m| am) interested in ([a-z0-9 .,'&\-]{2,100}?)(?=\s*[.!?,;]|\s*$)/i,'interest','topic'],[ /\bmy goal is to ([a-z0-9 .,'&\-]{2,120}?)(?=\s*[.!?,;]|\s*$)/i,'goal','primary_goal'] ];
       for(const [pattern,type,key] of patterns){const m=input.match(pattern);if(m&&m[1])await pool.query("INSERT INTO intelligence_memory(user_id,memory_type,key,value,source,confidence) VALUES($1,$2,$3,$4,'conversation',0.900) ON CONFLICT(user_id,memory_type,key) DO UPDATE SET value=EXCLUDED.value,source='conversation',confidence=EXCLUDED.confidence,updated_at=NOW()",[user.id,type,key,m[1].trim()]);}
     }
     res.status(200).json({...data,thread_id:threadId});
