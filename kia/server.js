@@ -27,12 +27,7 @@ const memory = [];
 const audit = [];
 const users = new Map();
 
-const knowledge = [{
-  id:'kia-core',
-  title:'KIA Intelligence Foundation',
-  content:'KIA is Krative T3ch private staff intelligence assistant. It is aligned with NOETICA Intelligence and uses Krative Core when connected.',
-  createdAt:new Date().toISOString()
-}];
+const knowledge = [];
 
 function token(){ return crypto.randomBytes(32).toString('hex'); }
 
@@ -55,15 +50,20 @@ function requireAdmin(req,res,next){
 }
 
 function record(s,eventType,action,metadata={}){
-  audit.unshift({
+  const item={
     id:crypto.randomUUID(),
     staffId:s?s.staffId:'unknown',
     eventType,
     action,
     metadata,
     createdAt:new Date().toISOString()
-  });
+  };
+  audit.unshift(item);
   if(audit.length>200) audit.pop();
+  void pool.query(
+    'INSERT INTO kia_audit (id,staff_id,event_type,action,metadata,created_at) VALUES ($1,$2,$3,$4,$5,$6)',
+    [item.id,item.staffId,item.eventType,item.action,JSON.stringify(item.metadata),item.createdAt]
+  ).catch(error=>console.error('KIA audit persistence failed:',error.message));
 }
 
 function hashPassword(password){
@@ -119,6 +119,42 @@ async function initDatabase(){
       approved_at TIMESTAMPTZ
     )
   `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS kia_sessions (
+      token TEXT PRIMARY KEY,
+      staff_id TEXT NOT NULL,
+      user_id UUID,
+      role TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS kia_memory (
+      id UUID PRIMARY KEY,
+      staff_id TEXT NOT NULL,
+      scope TEXT NOT NULL DEFAULT 'private',
+      content TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS kia_knowledge (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      content TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS kia_audit (
+      id UUID PRIMARY KEY,
+      staff_id TEXT NOT NULL,
+      event_type TEXT NOT NULL,
+      action TEXT NOT NULL,
+      metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
 }
 
 async function loadUsers(){
@@ -131,6 +167,42 @@ async function loadUsers(){
       createdAt:u.created_at.toISOString(),approvedAt:u.approved_at?u.approved_at.toISOString():null
     });
   }
+}
+
+async function loadPersistentState(){
+  sessions.clear();
+  const sessionResult=await pool.query('SELECT * FROM kia_sessions');
+  for(const s of sessionResult.rows){
+    sessions.set(s.token,{staffId:s.staff_id,...(s.user_id?{userId:s.user_id}:{}),role:s.role,createdAt:s.created_at.toISOString()});
+  }
+  memory.length=0;
+  const memoryResult=await pool.query('SELECT * FROM kia_memory ORDER BY created_at DESC LIMIT 1000');
+  for(const m of memoryResult.rows) memory.push({id:m.id,staffId:m.staff_id,scope:m.scope,content:m.content,createdAt:m.created_at.toISOString()});
+  knowledge.length=0;
+  const knowledgeResult=await pool.query('SELECT * FROM kia_knowledge ORDER BY created_at DESC');
+  for(const k of knowledgeResult.rows) knowledge.push({id:k.id,title:k.title,content:k.content,createdAt:k.created_at.toISOString()});
+  if(!knowledge.length){
+    const seed={id:'kia-core',title:'KIA Intelligence Foundation',content:'KIA is Krative T3ch private staff intelligence assistant. It is aligned with NOETICA Intelligence and uses Krative Core when connected.',createdAt:new Date().toISOString()};
+    await pool.query('INSERT INTO kia_knowledge (id,title,content,created_at) VALUES ($1,$2,$3,$4)',[seed.id,seed.title,seed.content,seed.createdAt]);
+    knowledge.push(seed);
+  }
+  audit.length=0;
+  const auditResult=await pool.query('SELECT * FROM kia_audit ORDER BY created_at DESC LIMIT 200');
+  for(const a of auditResult.rows) audit.push({id:a.id,staffId:a.staff_id,eventType:a.event_type,action:a.action,metadata:a.metadata,createdAt:a.created_at.toISOString()});
+}
+
+async function saveSession(t,s){
+  await pool.query('INSERT INTO kia_sessions (token,staff_id,user_id,role,created_at) VALUES ($1,$2,$3,$4,$5) ON CONFLICT (token) DO UPDATE SET staff_id=EXCLUDED.staff_id,user_id=EXCLUDED.user_id,role=EXCLUDED.role,created_at=EXCLUDED.created_at',[t,s.staffId,s.userId||null,s.role,s.createdAt]);
+}
+
+async function deleteSession(t){ await pool.query('DELETE FROM kia_sessions WHERE token=$1',[t]); }
+
+async function saveMemory(item){
+  await pool.query('INSERT INTO kia_memory (id,staff_id,scope,content,created_at) VALUES ($1,$2,$3,$4,$5)',[item.id,item.staffId,item.scope,item.content,item.createdAt]);
+}
+
+async function saveKnowledge(item){
+  await pool.query('INSERT INTO kia_knowledge (id,title,content,created_at) VALUES ($1,$2,$3,$4)',[item.id,item.title,item.content,item.createdAt]);
 }
 
 async function saveUser(u){
@@ -166,6 +238,7 @@ app.post('/api/login',async(req,res)=>{
     const t=token();
     const s={staffId:'admin',role:'admin',createdAt:new Date().toISOString()};
     sessions.set(t,s);
+    await saveSession(t,s);
     record(s,'AUTH_LOGIN','admin_login');
     return res.json({token:t,staff:s});
   }
@@ -176,6 +249,7 @@ app.post('/api/login',async(req,res)=>{
   const t=token();
   const s={staffId:staffId||'staff',role:'staff',createdAt:new Date().toISOString()};
   sessions.set(t,s);
+  await saveSession(t,s);
   record(s,'AUTH_LOGIN','legacy_staff_login');
   res.json({token:t,staff:s});
 });
@@ -233,13 +307,16 @@ app.post('/api/account-login',async(req,res)=>{
   const t=token();
   const s={staffId:user.staffId,userId:user.id,role:user.role,createdAt:new Date().toISOString()};
   sessions.set(t,s);
+  await saveSession(t,s);
   record(s,'AUTH_LOGIN','account_login',{userId:user.id});
   res.json({token:t,staff:{...s,name:user.name,email:user.email,department:user.department}});
 });
 
-app.post('/api/logout',requireAuth,(req,res)=>{
+app.post('/api/logout',requireAuth,async(req,res)=>{
   record(req.session,'AUTH_LOGOUT','staff_logout');
-  sessions.delete(req.headers.authorization.slice(7));
+  const sessionToken=req.headers.authorization.slice(7);
+  sessions.delete(sessionToken);
+  await deleteSession(sessionToken);
   res.json({success:true});
 });
 
@@ -318,20 +395,22 @@ app.post('/api/chat',requireAuth,async(req,res)=>{
 });
 
 app.get('/api/memory',requireAuth,(req,res)=>res.json({items:memory.filter(x=>x.staffId===req.session.staffId||x.scope==='shared')}));
-app.post('/api/memory',requireAuth,(req,res)=>{
+app.post('/api/memory',requireAuth,async(req,res)=>{
   const content=typeof(req.body&&req.body.content)==='string'?req.body.content.trim():'';
   if(!content) return res.status(400).json({error:'Memory content is required.'});
   const item={id:crypto.randomUUID(),staffId:req.session.staffId,scope:req.body&&req.body.scope==='shared'?'shared':'private',content,createdAt:new Date().toISOString()};
+  await saveMemory(item);
   memory.unshift(item);
   record(req.session,'MEMORY_WRITE','store_memory',{memoryId:item.id,scope:item.scope});
   res.status(201).json(item);
 });
 app.get('/api/knowledge',requireAuth,(req,res)=>res.json({items:knowledge}));
-app.post('/api/knowledge',requireAuth,(req,res)=>{
+app.post('/api/knowledge',requireAuth,async(req,res)=>{
   const title=typeof(req.body&&req.body.title)==='string'?req.body.title.trim():'';
   const content=typeof(req.body&&req.body.content)==='string'?req.body.content.trim():'';
   if(!title||!content) return res.status(400).json({error:'Title and content are required.'});
   const item={id:crypto.randomUUID(),title,content,createdAt:new Date().toISOString()};
+  await saveKnowledge(item);
   knowledge.unshift(item);
   record(req.session,'KNOWLEDGE_WRITE','add_knowledge',{knowledgeId:item.id});
   res.status(201).json(item);
@@ -341,6 +420,7 @@ app.get('/api/audit',requireAuth,(req,res)=>res.json({items:audit}));
 app.get(/.*/,(req,res)=>res.sendFile(path.join(__dirname,'public','index.html')));
 initDatabase()
   .then(loadUsers)
+  .then(loadPersistentState)
   .then(()=>{
     app.listen(PORT,'0.0.0.0',()=>console.log('KIA listening on '+PORT));
   })
