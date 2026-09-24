@@ -162,9 +162,18 @@ async function loadIntelligenceMemory(){
     box.innerHTML=data.map(m=>{
       let value=m.value;
       try{const parsed=JSON.parse(value);if(m.memory_type==="learning_course"){value=parsed.title+" — "+parsed.progress+"% complete ("+parsed.completed_lessons+"/"+parsed.total_lessons+" lessons)";}else if(m.memory_type==="learning_summary"){const courses=parsed.courses||[];value=courses.length?courses.map(c=>c.title+" ("+c.progress+"%)").join(", "):"No active courses";}}catch{}
-      return '<article class="card" style="margin-top:10px"><span class="tag">'+escapeHtml(labels[m.memory_type]||m.memory_type)+'</span><h3>'+escapeHtml(m.key.replace(/_/g," "))+'</h3><p>'+escapeHtml(value)+'</p><small class="muted">Source: '+escapeHtml(m.source||"conversation")+'</small></article>';
+      const removable=!["learning_course","learning_summary"].includes(m.memory_type);
+      return '<article class="card" style="margin-top:10px"><span class="tag">'+escapeHtml(labels[m.memory_type]||m.memory_type)+'</span><h3>'+escapeHtml(m.key.replace(/_/g," "))+'</h3><p>'+escapeHtml(value)+'</p><small class="muted">Source: '+escapeHtml(m.source||"conversation")+'</small>'+(removable?'<div class="actions"><button class="pill" onclick="forgetIntelligenceMemory('+m.id+')">Forget</button></div>':'')+'</article>';
     }).join("");
   }catch(e){box.innerHTML='<div class="empty">'+escapeHtml(e.message)+'</div>';}
+}
+async function forgetIntelligenceMemory(id){
+  if(!confirm("Forget this Intelligence memory?"))return;
+  try{
+    const res=await fetch(API_BASE+"/api/intelligence/memory/"+id,{method:"DELETE",headers:{Authorization:"Bearer "+authToken}});
+    const data=await res.json();if(!res.ok)throw new Error(data.error||"Unable to forget memory");
+    loadIntelligenceMemory();
+  }catch(e){alert(e.message);}
 }
 async function loadProfile(){
   if(!authToken)return;
