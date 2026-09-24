@@ -270,7 +270,7 @@ app.get('/api/admin/users',requireAuth,requireAdmin,(req,res)=>{
   res.json({items:[...users.values()].map(publicUser)});
 });
 
-app.post('/api/admin/users/:id/approve',requireAuth,requireAdmin,(req,res)=>{
+app.post('/api/admin/users/:id/approve',requireAuth,requireAdmin,async(req,res)=>{
   const u=users.get(req.params.id);
   if(!u) return res.status(404).json({error:'User not found.'});
   u.status='approved';
@@ -284,7 +284,7 @@ app.post('/api/admin/users/:id/approve',requireAuth,requireAdmin,(req,res)=>{
   res.json({success:true,user:publicUser(u)});
 });
 
-app.post('/api/admin/users/:id/reject',requireAuth,requireAdmin,(req,res)=>{
+app.post('/api/admin/users/:id/reject',requireAuth,requireAdmin,async(req,res)=>{
   const u=users.get(req.params.id);
   if(!u) return res.status(404).json({error:'User not found.'});
   u.status='rejected';
