@@ -77,6 +77,203 @@ async function initDb() {
     CREATE TABLE IF NOT EXISTS applications (id BIGSERIAL PRIMARY KEY,user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,opportunity_id BIGINT NOT NULL REFERENCES opportunities(id) ON DELETE CASCADE,status TEXT NOT NULL DEFAULT 'Applied',applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),UNIQUE(user_id,opportunity_id));
     CREATE TABLE IF NOT EXISTS enrollments (id BIGSERIAL PRIMARY KEY,user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,course_id BIGINT NOT NULL REFERENCES courses(id) ON DELETE CASCADE,enrolled_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),progress INTEGER NOT NULL DEFAULT 0 CHECK(progress BETWEEN 0 AND 100),completed_at TIMESTAMPTZ,UNIQUE(user_id,course_id));
     ALTER TABLE enrollments ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ;
+    CREATE TABLE IF NOT EXISTS learning_academies (
+      id BIGSERIAL PRIMARY KEY,
+      slug TEXT UNIQUE NOT NULL,
+      name TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      icon TEXT NOT NULL DEFAULT '',
+      cover_image TEXT NOT NULL DEFAULT '',
+      category TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'active',
+      created_by BIGINT REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE TABLE IF NOT EXISTS learning_paths (
+      id BIGSERIAL PRIMARY KEY,
+      academy_id BIGINT NOT NULL REFERENCES learning_academies(id) ON DELETE CASCADE,
+      slug TEXT NOT NULL,
+      title TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      level TEXT NOT NULL DEFAULT 'All levels',
+      estimated_hours NUMERIC(6,2) NOT NULL DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'active',
+      created_by BIGINT REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE(academy_id,slug)
+    );
+    CREATE TABLE IF NOT EXISTS course_modules (
+      id BIGSERIAL PRIMARY KEY,
+      course_id BIGINT NOT NULL REFERENCES courses(id) ON DELETE CASCADE,
+      title TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      position INTEGER NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE(course_id,position)
+    );
+    CREATE TABLE IF NOT EXISTS learning_path_courses (
+      id BIGSERIAL PRIMARY KEY,
+      path_id BIGINT NOT NULL REFERENCES learning_paths(id) ON DELETE CASCADE,
+      course_id BIGINT NOT NULL REFERENCES courses(id) ON DELETE CASCADE,
+      position INTEGER NOT NULL,
+      required BOOLEAN NOT NULL DEFAULT true,
+      UNIQUE(path_id,course_id),
+      UNIQUE(path_id,position)
+    );
+    ALTER TABLE courses ADD COLUMN IF NOT EXISTS academy_id BIGINT REFERENCES learning_academies(id) ON DELETE SET NULL;
+    ALTER TABLE courses ADD COLUMN IF NOT EXISTS slug TEXT;
+    ALTER TABLE courses ADD COLUMN IF NOT EXISTS short_description TEXT NOT NULL DEFAULT '';
+    ALTER TABLE courses ADD COLUMN IF NOT EXISTS estimated_minutes INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE courses ADD COLUMN IF NOT EXISTS thumbnail TEXT NOT NULL DEFAULT '';
+    ALTER TABLE courses ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'active';
+    ALTER TABLE courses ADD COLUMN IF NOT EXISTS is_free BOOLEAN NOT NULL DEFAULT true;
+    CREATE UNIQUE INDEX IF NOT EXISTS courses_slug_idx ON courses(slug) WHERE slug IS NOT NULL;
+    CREATE TABLE IF NOT EXISTS skills (
+      id BIGSERIAL PRIMARY KEY,
+      slug TEXT UNIQUE NOT NULL,
+      name TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      category TEXT NOT NULL DEFAULT '',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE TABLE IF NOT EXISTS course_skills (
+      course_id BIGINT NOT NULL REFERENCES courses(id) ON DELETE CASCADE,
+      skill_id BIGINT NOT NULL REFERENCES skills(id) ON DELETE CASCADE,
+      level TEXT NOT NULL DEFAULT 'foundation',
+      PRIMARY KEY(course_id,skill_id)
+    );
+    CREATE TABLE IF NOT EXISTS user_skills (
+      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      skill_id BIGINT NOT NULL REFERENCES skills(id) ON DELETE CASCADE,
+      level TEXT NOT NULL DEFAULT 'foundation',
+      evidence_count INTEGER NOT NULL DEFAULT 0,
+      verified BOOLEAN NOT NULL DEFAULT false,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY(user_id,skill_id)
+    );
+    CREATE TABLE IF NOT EXISTS lesson_activities (
+      id BIGSERIAL PRIMARY KEY,
+      lesson_id BIGINT NOT NULL REFERENCES lessons(id) ON DELETE CASCADE,
+      activity_type TEXT NOT NULL,
+      title TEXT NOT NULL,
+      content TEXT NOT NULL DEFAULT '',
+      configuration JSONB NOT NULL DEFAULT '{}'::jsonb,
+      position INTEGER NOT NULL,
+      points INTEGER NOT NULL DEFAULT 0,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE(lesson_id,position)
+    );
+    CREATE TABLE IF NOT EXISTS assessments (
+      id BIGSERIAL PRIMARY KEY,
+      course_id BIGINT REFERENCES courses(id) ON DELETE CASCADE,
+      module_id BIGINT REFERENCES course_modules(id) ON DELETE CASCADE,
+      lesson_id BIGINT REFERENCES lessons(id) ON DELETE CASCADE,
+      title TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      assessment_type TEXT NOT NULL DEFAULT 'quiz',
+      passing_score INTEGER NOT NULL DEFAULT 70,
+      attempt_limit INTEGER,
+      status TEXT NOT NULL DEFAULT 'active',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE TABLE IF NOT EXISTS assessment_questions (
+      id BIGSERIAL PRIMARY KEY,
+      assessment_id BIGINT NOT NULL REFERENCES assessments(id) ON DELETE CASCADE,
+      question TEXT NOT NULL,
+      question_type TEXT NOT NULL DEFAULT 'multiple_choice',
+      options JSONB NOT NULL DEFAULT '[]'::jsonb,
+      correct_answer JSONB NOT NULL DEFAULT 'null'::jsonb,
+      points INTEGER NOT NULL DEFAULT 1,
+      position INTEGER NOT NULL,
+      UNIQUE(assessment_id,position)
+    );
+    CREATE TABLE IF NOT EXISTS assessment_attempts (
+      id BIGSERIAL PRIMARY KEY,
+      assessment_id BIGINT NOT NULL REFERENCES assessments(id) ON DELETE CASCADE,
+      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      score NUMERIC(6,2) NOT NULL DEFAULT 0,
+      passed BOOLEAN NOT NULL DEFAULT false,
+      started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      completed_at TIMESTAMPTZ
+    );
+    CREATE TABLE IF NOT EXISTS learning_projects (
+      id BIGSERIAL PRIMARY KEY,
+      academy_id BIGINT REFERENCES learning_academies(id) ON DELETE SET NULL,
+      course_id BIGINT REFERENCES courses(id) ON DELETE SET NULL,
+      title TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      instructions TEXT NOT NULL DEFAULT '',
+      difficulty TEXT NOT NULL DEFAULT 'Beginner',
+      estimated_hours NUMERIC(6,2) NOT NULL DEFAULT 0,
+      skills JSONB NOT NULL DEFAULT '[]'::jsonb,
+      status TEXT NOT NULL DEFAULT 'active',
+      created_by BIGINT REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE TABLE IF NOT EXISTS project_submissions (
+      id BIGSERIAL PRIMARY KEY,
+      project_id BIGINT NOT NULL REFERENCES learning_projects(id) ON DELETE CASCADE,
+      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      title TEXT NOT NULL DEFAULT '',
+      description TEXT NOT NULL DEFAULT '',
+      submission_url TEXT NOT NULL DEFAULT '',
+      repository_url TEXT NOT NULL DEFAULT '',
+      content TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'submitted',
+      reviewed_by BIGINT REFERENCES users(id) ON DELETE SET NULL,
+      score NUMERIC(6,2),
+      feedback TEXT NOT NULL DEFAULT '',
+      submitted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      reviewed_at TIMESTAMPTZ
+    );
+    CREATE TABLE IF NOT EXISTS certificates (
+      id BIGSERIAL PRIMARY KEY,
+      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      course_id BIGINT REFERENCES courses(id) ON DELETE SET NULL,
+      certificate_number TEXT UNIQUE NOT NULL,
+      title TEXT NOT NULL,
+      issued_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      expires_at TIMESTAMPTZ,
+      verification_code TEXT UNIQUE NOT NULL,
+      status TEXT NOT NULL DEFAULT 'active'
+    );
+    CREATE TABLE IF NOT EXISTS saved_learning (
+      id BIGSERIAL PRIMARY KEY,
+      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      resource_type TEXT NOT NULL,
+      resource_id BIGINT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE(user_id,resource_type,resource_id)
+    );
+    CREATE TABLE IF NOT EXISTS badges (
+      id BIGSERIAL PRIMARY KEY,
+      slug TEXT UNIQUE NOT NULL,
+      name TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      category TEXT NOT NULL DEFAULT '',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE TABLE IF NOT EXISTS user_badges (
+      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      badge_id BIGINT NOT NULL REFERENCES badges(id) ON DELETE CASCADE,
+      awarded_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY(user_id,badge_id)
+    );
+    CREATE TABLE IF NOT EXISTS course_instructors (
+      course_id BIGINT NOT NULL REFERENCES courses(id) ON DELETE CASCADE,
+      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      role TEXT NOT NULL DEFAULT 'instructor',
+      PRIMARY KEY(course_id,user_id)
+    );
+    CREATE INDEX IF NOT EXISTS learning_paths_academy_idx ON learning_paths(academy_id,status);
+    CREATE INDEX IF NOT EXISTS courses_academy_idx ON courses(academy_id,status);
+    CREATE INDEX IF NOT EXISTS course_modules_course_idx ON course_modules(course_id,position);
+    CREATE INDEX IF NOT EXISTS project_submissions_user_idx ON project_submissions(user_id,submitted_at DESC);
+    CREATE INDEX IF NOT EXISTS user_skills_user_idx ON user_skills(user_id,updated_at DESC);
     CREATE TABLE IF NOT EXISTS lessons (id BIGSERIAL PRIMARY KEY,course_id BIGINT NOT NULL REFERENCES courses(id) ON DELETE CASCADE,title TEXT NOT NULL,content TEXT NOT NULL,position INTEGER NOT NULL,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),UNIQUE(course_id,position));
     CREATE TABLE IF NOT EXISTS lesson_progress (user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,lesson_id BIGINT NOT NULL REFERENCES lessons(id) ON DELETE CASCADE,completed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),PRIMARY KEY(user_id,lesson_id));
     CREATE TABLE IF NOT EXISTS posts (id BIGSERIAL PRIMARY KEY,user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,content TEXT NOT NULL,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
@@ -97,6 +294,25 @@ async function initDb() {
   await pool.query("UPDATE users SET role='super_admin' WHERE id=(SELECT id FROM users ORDER BY created_at,id LIMIT 1) AND NOT EXISTS (SELECT 1 FROM users WHERE role IN ('admin','super_admin'))");
   for (const k of KRANOVA_KNOWLEDGE) await pool.query("INSERT INTO knowledge(knowledge_key,category,title,content,answer,source,verified,active) VALUES($1,$2,$3,$4,$5,$6,true,true) ON CONFLICT(knowledge_key) DO UPDATE SET category=EXCLUDED.category,title=EXCLUDED.title,content=EXCLUDED.content,answer=EXCLUDED.answer,verified=true,active=true,updated_at=NOW()",[k.id,k.type,k.title,k.content,k.answer,"Kranova verified foundation"]);
   for (const c of memory.courses) await pool.query("INSERT INTO courses(id,category,title,description,level) VALUES($1,$2,$3,$4,$5) ON CONFLICT (id) DO NOTHING",[c.id,c.category,c.title,c.description,c.level]);
+  const academySeed = [
+    ["technology","Technology","Build practical technology skills from foundations to advanced practice.","💻","Technology"],
+    ["intelligence","Intelligence","Explore intelligence, NOETICA and emerging technology concepts.","◈","Intelligence"],
+    ["business","Business","Learn how to understand problems, create value and build opportunities.","◉","Business"],
+    ["creative","Creative","Develop practical skills for digital creation, design and communication.","✦","Creative"],
+    ["professional","Professional","Strengthen communication, collaboration and workplace capabilities.","◎","Professional"],
+    ["academic","Academic","Develop research, investigation and evidence-based learning skills.","⌘","Academic"]
+  ];
+  for (const a of academySeed) await pool.query("INSERT INTO learning_academies(slug,name,description,icon,category) VALUES($1,$2,$3,$4,$5) ON CONFLICT(slug) DO UPDATE SET name=EXCLUDED.name,description=EXCLUDED.description,icon=EXCLUDED.icon,category=EXCLUDED.category,updated_at=NOW()",a);
+  await pool.query("UPDATE courses SET academy_id=(SELECT id FROM learning_academies WHERE lower(slug)=lower(regexp_replace(category,'[^a-zA-Z0-9]+','','g'))) WHERE academy_id IS NULL AND EXISTS (SELECT 1 FROM learning_academies WHERE lower(slug)=lower(regexp_replace(category,'[^a-zA-Z0-9]+','','g')))");
+  await pool.query("UPDATE courses SET slug=lower(regexp_replace(title,'[^a-zA-Z0-9]+','-','g')) WHERE slug IS NULL");
+  await pool.query("ALTER TABLE lessons ADD COLUMN IF NOT EXISTS module_id BIGINT REFERENCES course_modules(id) ON DELETE CASCADE");
+  const courseRows = await pool.query("SELECT id,title FROM courses ORDER BY id");
+  for (const course of courseRows.rows) {
+    const existing = await pool.query("SELECT id FROM course_modules WHERE course_id=$1 ORDER BY position,id LIMIT 1",[course.id]);
+    if (!existing.rows[0]) await pool.query("INSERT INTO course_modules(course_id,title,description,position) VALUES($1,$2,$3,1)",[course.id,"Course Foundations","Core lessons and foundational learning for this course."]);
+    const moduleId=(await pool.query("SELECT id FROM course_modules WHERE course_id=$1 ORDER BY position,id LIMIT 1",[course.id])).rows[0].id;
+    await pool.query("UPDATE lessons SET module_id=$1 WHERE course_id=$2 AND module_id IS NULL",[moduleId,course.id]);
+  }
   for (const o of memory.opportunities) await pool.query("INSERT INTO opportunities(id,type,title,category,description) VALUES($1,$2,$3,$4,$5) ON CONFLICT (id) DO NOTHING",[o.id,o.type,o.title,o.category,o.description]);
   const lessonSeed = [
     [1,1,"The web and how it works","Learn the basic relationship between browsers, servers, URLs, HTTP and web pages.",1],
