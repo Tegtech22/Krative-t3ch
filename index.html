@@ -119,7 +119,11 @@ const opportunities=[
 ["Internships","Innovation Intern","Innovation","A learning-focused practical placement."],
 ["Scholarships","Learning Support","Education","A scholarship-style opportunity for further learning."]
 ];
-function renderOpp(filter='All'){document.getElementById('oppList').innerHTML=opportunities.filter(o=>filter==='All'||o[0]===filter).map(o=>'<article class="card"><span class="tag">'+o[0]+'</span><h3>'+o[1]+'</h3><p>'+o[3]+'</p><div class="course-meta"><span>'+o[2]+'</span><button class="pill" onclick="openOpportunity('+o[4]+')">View</button></div></article>').join('')}
+function renderOpp(filter='All'){
+  const selected=String(filter||'All').trim().toLowerCase();
+  const rows=opportunities.filter(o=>selected==='all'||String(o[0]||'').trim().toLowerCase()===selected);
+  document.getElementById('oppList').innerHTML=rows.map(o=>'<article class="card"><span class="tag">'+escapeHtml(o[0])+'</span><h3>'+escapeHtml(o[1])+'</h3><p>'+escapeHtml(o[3])+'</p><div class="course-meta"><span>'+escapeHtml(o[2])+'</span><button class="pill" onclick="openOpportunity('+Number(o[4])+')">View</button></div></article>').join('')||'<div class="empty">No opportunities in this category yet.</div>';
+}
 const buttons=[...document.querySelectorAll('.nav button')],views=[...document.querySelectorAll('.view')];
 function show(id){buttons.forEach(b=>b.classList.toggle('active',b.dataset.view===id));views.forEach(v=>v.classList.toggle('active',v.id===id));window.scrollTo({top:0,behavior:'smooth'})}
 buttons.forEach(b=>b.onclick=async()=>{
