@@ -846,6 +846,68 @@ app.delete("/api/learn/save/:resourceType/:resourceId", async (req,res) => {
   catch(e){console.error("Remove saved learning failed:",e);res.status(500).json({error:"unable to remove saved resource"});}
 });
 
+
+app.get("/api/admin/learning/projects/submissions", async (req,res) => {
+  const a=await requireAdmin(req,res);if(a.error)return;
+  if(!pool)return res.json([]);
+  try{
+    const status=req.query.status?String(req.query.status).trim():"";
+    const params=[];let where="";
+    if(status){params.push(status);where="WHERE ps.status=$1";}
+    const {rows}=await pool.query("SELECT ps.id,ps.project_id,ps.user_id,ps.title,ps.description,ps.submission_url,ps.repository_url,ps.content,ps.status,ps.score,ps.feedback,ps.submitted_at,ps.reviewed_at,p.title AS project_title,u.name AS user_name,u.email AS user_email FROM project_submissions ps JOIN learning_projects p ON p.id=ps.project_id JOIN users u ON u.id=ps.user_id "+where+" ORDER BY ps.submitted_at DESC,ps.id DESC",params);
+    res.json(rows);
+  }catch(e){console.error("Project submission admin lookup failed:",e);res.status(500).json({error:"unable to load project submissions"});}
+});
+
+app.put("/api/admin/learning/projects/submissions/:id/review", async (req,res) => {
+  const a=await requireAdmin(req,res);if(a.error)return;
+  const id=Number(req.params.id),status=String(req.body?.status||"").trim();
+  if(!Number.isInteger(id)||!["approved","rejected","needs_revision"].includes(status))return res.status(400).json({error:"invalid submission id or status"});
+  const score=req.body?.score===null||req.body?.score===undefined?null:Number(req.body.score);
+  if(score!==null&&(!Number.isFinite(score)||score<0||score>100))return res.status(400).json({error:"score must be between 0 and 100"});
+  const feedback=String(req.body?.feedback||"").trim().slice(0,5000);
+  if(!pool)return res.json({ok:true,status,score,feedback});
+  const client=await pool.connect();
+  try{
+    await client.query("BEGIN");
+    const s=await client.query("SELECT ps.id,ps.project_id,ps.user_id,p.title AS project_title,p.skills FROM project_submissions ps JOIN learning_projects p ON p.id=ps.project_id WHERE ps.id=$1 FOR UPDATE",[id]);
+    if(!s.rows[0]){await client.query("ROLLBACK");return res.status(404).json({error:"submission not found"});}
+    const row=s.rows[0];
+    await client.query("UPDATE project_submissions SET status=$1,score=$2,feedback=$3,reviewed_by=$4,reviewed_at=NOW() WHERE id=$5",[status,score,feedback,a.user.id,id]);
+    if(status==="approved"){
+      const skills=Array.isArray(row.skills)?row.skills:[];
+      for(const item of skills){
+        const slug=typeof item==="string"?item.trim().toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-|-$/g,""):String(item?.slug||item?.name||"").trim().toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-|-$/g,"");
+        const name=typeof item==="string"?item.trim():String(item?.name||"").trim();
+        if(!slug||!name)continue;
+        const skill=await client.query("INSERT INTO skills(slug,name,description,category) VALUES($1,$2,$3,$4) ON CONFLICT(slug) DO UPDATE SET name=EXCLUDED.name RETURNING id",[slug,name,"Demonstrated through an approved Kranova project submission.","project"]);
+        await client.query("INSERT INTO user_skills(user_id,skill_id,level,evidence_count,verified,updated_at) VALUES($1,$2,'practical',1,true,NOW()) ON CONFLICT(user_id,skill_id) DO UPDATE SET evidence_count=user_skills.evidence_count+1,verified=true,level='practical',updated_at=NOW()",[row.user_id,skill.rows[0].id]);
+      }
+    }
+    let certificate=null;
+    if(status==="approved"){
+      const course=await client.query("SELECT course_id FROM learning_projects WHERE id=$1",[row.project_id]);
+      const courseId=course.rows[0]?.course_id||null;
+      if(courseId){
+        const enrolled=await client.query("SELECT progress FROM enrollments WHERE user_id=$1 AND course_id=$2",[row.user_id,courseId]);
+        if(enrolled.rows[0]&&Number(enrolled.rows[0].progress)>=100){
+          const existing=await client.query("SELECT id,certificate_number,title,issued_at,verification_code,status FROM certificates WHERE user_id=$1 AND course_id=$2",[row.user_id,courseId]);
+          if(existing.rows[0])certificate=existing.rows[0];
+          else{
+            const verificationCode=crypto.randomBytes(10).toString("hex").toUpperCase();
+            const certificateNumber="KRN-"+new Date().getFullYear()+"-"+String(row.user_id).padStart(6,"0")+"-"+crypto.randomBytes(4).toString("hex").toUpperCase();
+            const ins=await client.query("INSERT INTO certificates(user_id,course_id,certificate_number,title,verification_code) VALUES($1,$2,$3,$4,$5) RETURNING id,certificate_number,title,issued_at,verification_code,status",[row.user_id,courseId,certificateNumber,row.project_title,verificationCode]);
+            certificate=ins.rows[0];
+          }
+        }
+      }
+    }
+    await client.query("COMMIT");
+    res.json({ok:true,status,score,feedback,certificate});
+  }catch(e){await client.query("ROLLBACK");console.error("Project submission review failed:",e);res.status(500).json({error:"unable to review project submission"});}
+  finally{client.release();}
+});
+
 app.get("/api/learn/achievements", async (req,res) => {
   const user=await getAuthUser(req);if(!user)return res.status(401).json({error:"authentication required"});
   if(!pool)return res.json({certificates:[],badges:[],skills:[],milestones:{}});
