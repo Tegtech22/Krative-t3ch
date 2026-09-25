@@ -908,17 +908,47 @@ app.put("/api/admin/learning/projects/submissions/:id/review", async (req,res) =
   finally{client.release();}
 });
 
+app.get("/api/learn/certificates/verify/:code", async (req,res) => {
+  const code=String(req.params.code||"").trim().toUpperCase();
+  if(!code) return res.status(400).json({error:"verification code is required"});
+  if(!pool) return res.status(404).json({error:"certificate not found"});
+  try{
+    const {rows}=await pool.query(`
+      SELECT c.id,c.certificate_number,c.title,c.issued_at,c.expires_at,c.verification_code,c.status,
+             u.name AS learner_name,
+             coalesce(co.title,'') AS course_title
+      FROM certificates c
+      JOIN users u ON u.id=c.user_id
+      LEFT JOIN courses co ON co.id=c.course_id
+      WHERE c.verification_code=$1
+      LIMIT 1
+    `,[code]);
+    if(!rows[0]) return res.status(404).json({verified:false,error:"certificate not found"});
+    const certificate=rows[0];
+    const verified=certificate.status==="active" && (!certificate.expires_at || new Date(certificate.expires_at)>new Date());
+    res.json({verified,certificate});
+  }catch(e){console.error("Certificate verification failed:",e);res.status(500).json({error:"unable to verify certificate"});}
+});
+
 app.get("/api/learn/achievements", async (req,res) => {
   const user=await getAuthUser(req);if(!user)return res.status(401).json({error:"authentication required"});
-  if(!pool)return res.json({certificates:[],badges:[],skills:[],milestones:{}});
+  if(!pool)return res.json({certificates:[],badges:[],skills:[],projects:[],milestones:{}});
   try{
-    const [certificates,badges,skills,milestones]=await Promise.all([
+    const [certificates,badges,skills,projects,milestones]=await Promise.all([
       pool.query("SELECT id,certificate_number,title,course_id,issued_at,expires_at,verification_code,status FROM certificates WHERE user_id=$1 ORDER BY issued_at DESC",[user.id]),
       pool.query("SELECT b.id,b.slug,b.name,b.description,b.category,ub.awarded_at FROM user_badges ub JOIN badges b ON b.id=ub.badge_id WHERE ub.user_id=$1 ORDER BY ub.awarded_at DESC",[user.id]),
       pool.query("SELECT s.id,s.slug,s.name,s.category,us.level,us.evidence_count,us.verified,us.updated_at FROM user_skills us JOIN skills s ON s.id=us.skill_id WHERE us.user_id=$1 ORDER BY us.updated_at DESC",[user.id]),
+      pool.query(`
+        SELECT ps.id,ps.project_id,lp.title AS project_title,ps.title,ps.description,ps.submission_url,ps.repository_url,
+               ps.status,ps.score,ps.feedback,ps.submitted_at,ps.reviewed_at
+        FROM project_submissions ps
+        JOIN learning_projects lp ON lp.id=ps.project_id
+        WHERE ps.user_id=$1 AND ps.status='approved'
+        ORDER BY ps.reviewed_at DESC NULLS LAST,ps.submitted_at DESC
+      `,[user.id]),
       pool.query("SELECT COUNT(*) FILTER(WHERE progress>0 AND progress<100)::int AS courses_started,COUNT(*) FILTER(WHERE progress=100)::int AS courses_completed FROM enrollments WHERE user_id=$1",[user.id])
     ]);
-    res.json({certificates:certificates.rows,badges:badges.rows,skills:skills.rows,milestones:milestones.rows[0]||{courses_started:0,courses_completed:0}});
+    res.json({certificates:certificates.rows,badges:badges.rows,skills:skills.rows,projects:projects.rows,milestones:milestones.rows[0]||{courses_started:0,courses_completed:0}});
   }catch(e){console.error("Achievement lookup failed:",e);res.status(500).json({error:"unable to load achievements"});}
 });
 
