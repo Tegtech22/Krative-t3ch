@@ -864,13 +864,15 @@ app.get("/api/learn/overview", async (req,res) => {
   const user=await getAuthUser(req);if(!user)return res.status(401).json({error:"authentication required"});
   if(!pool)return res.json({continue_learning:[],recommended:[],progress:{},next_step:null});
   try{
-    const [continueLearning,recommended,progress,nextStep]=await Promise.all([
+    const [continueLearning,recommended,progress,nextStep,academies,projects]=await Promise.all([
       pool.query("SELECT c.id,c.slug,c.title,c.short_description,c.level,c.estimated_minutes,e.progress,e.enrolled_at FROM enrollments e JOIN courses c ON c.id=e.course_id WHERE e.user_id=$1 AND e.progress<100 ORDER BY e.enrolled_at DESC LIMIT 6",[user.id]),
       pool.query("SELECT c.id,c.slug,c.title,c.short_description,c.level,c.estimated_minutes,c.category FROM courses c WHERE c.status='active' AND NOT EXISTS(SELECT 1 FROM enrollments e WHERE e.user_id=$1 AND e.course_id=c.id) ORDER BY c.created_at DESC,c.id DESC LIMIT 6",[user.id]),
       pool.query("SELECT COUNT(*)::int AS enrolled,COUNT(*) FILTER(WHERE progress>0 AND progress<100)::int AS in_progress,COUNT(*) FILTER(WHERE progress=100)::int AS completed,COALESCE(ROUND(AVG(progress))::int,0) AS average_progress FROM enrollments WHERE user_id=$1",[user.id]),
-      pool.query("SELECT c.id,c.slug,c.title,e.progress FROM enrollments e JOIN courses c ON c.id=e.course_id WHERE e.user_id=$1 AND e.progress<100 ORDER BY e.enrolled_at DESC LIMIT 1",[user.id])
+      pool.query("SELECT c.id,c.slug,c.title,e.progress FROM enrollments e JOIN courses c ON c.id=e.course_id WHERE e.user_id=$1 AND e.progress<100 ORDER BY e.enrolled_at DESC LIMIT 1",[user.id]),
+      pool.query("SELECT a.id,a.slug,a.name,a.description,a.icon,a.category,COUNT(DISTINCT c.id)::int AS course_count FROM learning_academies a LEFT JOIN courses c ON c.academy_id=a.id AND c.status='active' WHERE a.status='active' GROUP BY a.id ORDER BY a.name LIMIT 6"),
+      pool.query("SELECT id,title,description,difficulty,estimated_hours,course_id,academy_id FROM learning_projects WHERE status='active' ORDER BY created_at DESC,id DESC LIMIT 6")
     ]);
-    res.json({continue_learning:continueLearning.rows,recommended:recommended.rows,progress:progress.rows[0]||{},next_step:nextStep.rows[0]||null});
+    res.json({continue_learning:continueLearning.rows,recommended:recommended.rows,progress:progress.rows[0]||{},next_step:nextStep.rows[0]||null,academies:academies.rows,projects:projects.rows});
   }catch(e){console.error("Learn overview failed:",e);res.status(500).json({error:"unable to load learning overview"});}
 });
 
