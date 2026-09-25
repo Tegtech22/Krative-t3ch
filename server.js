@@ -686,6 +686,97 @@ app.get("/api/learn/lessons/:id", async (req,res) => {
   }catch(e){console.error("Lesson detail failed:",e);res.status(500).json({error:"unable to load lesson"});}
 });
 
+
+app.get("/api/learn/assessments", async (req,res) => {
+  if(!pool)return res.json([]);
+  try{
+    const params=[],where=["a.status='active'"];
+    for(const [query,column,label] of [["course_id","a.course_id","course"],["module_id","a.module_id","module"],["lesson_id","a.lesson_id","lesson"]]){
+      if(req.query[query]){
+        const id=Number(req.query[query]);
+        if(!Number.isInteger(id))return res.status(400).json({error:"invalid "+label+" id"});
+        params.push(id);where.push(column+"=$"+params.length);
+      }
+    }
+    const {rows}=await pool.query(
+      "SELECT a.id,a.course_id,a.module_id,a.lesson_id,a.title,a.description,a.assessment_type,a.passing_score,a.attempt_limit,COUNT(q.id)::int AS question_count FROM assessments a LEFT JOIN assessment_questions q ON q.assessment_id=a.id WHERE "+where.join(" AND ")+" GROUP BY a.id ORDER BY a.created_at,a.id",
+      params
+    );
+    res.json(rows);
+  }catch(e){console.error("Assessment lookup failed:",e);res.status(500).json({error:"unable to load assessments"});}
+});
+
+app.get("/api/learn/assessments/:id", async (req,res) => {
+  const id=Number(req.params.id);if(!Number.isInteger(id))return res.status(400).json({error:"invalid assessment id"});
+  if(!pool)return res.status(404).json({error:"assessment not found"});
+  try{
+    const a=await pool.query("SELECT id,course_id,module_id,lesson_id,title,description,assessment_type,passing_score,attempt_limit,status FROM assessments WHERE id=$1 AND status='active'",[id]);
+    if(!a.rows[0])return res.status(404).json({error:"assessment not found"});
+    const questions=await pool.query("SELECT id,question,question_type,options,points,position FROM assessment_questions WHERE assessment_id=$1 ORDER BY position",[id]);
+    const user=await getAuthUser(req);
+    let attempts=[];
+    if(user){
+      const history=await pool.query("SELECT id,score,passed,started_at,completed_at FROM assessment_attempts WHERE assessment_id=$1 AND user_id=$2 ORDER BY started_at DESC,id DESC LIMIT 10",[id,user.id]);
+      attempts=history.rows;
+    }
+    res.json({...a.rows[0],questions:questions.rows,attempts});
+  }catch(e){console.error("Assessment detail failed:",e);res.status(500).json({error:"unable to load assessment"});}
+});
+
+app.get("/api/learn/assessments/:id/attempts", async (req,res) => {
+  const user=await getAuthUser(req);if(!user)return res.status(401).json({error:"authentication required"});
+  const id=Number(req.params.id);if(!Number.isInteger(id))return res.status(400).json({error:"invalid assessment id"});
+  if(!pool)return res.json([]);
+  try{
+    const exists=await pool.query("SELECT id FROM assessments WHERE id=$1 AND status='active'",[id]);
+    if(!exists.rows[0])return res.status(404).json({error:"assessment not found"});
+    const {rows}=await pool.query("SELECT id,score,passed,started_at,completed_at FROM assessment_attempts WHERE assessment_id=$1 AND user_id=$2 ORDER BY started_at DESC,id DESC",[id,user.id]);
+    res.json(rows);
+  }catch(e){console.error("Assessment attempts lookup failed:",e);res.status(500).json({error:"unable to load assessment attempts"});}
+});
+
+app.post("/api/learn/assessments/:id/attempts", async (req,res) => {
+  const user=await getAuthUser(req);if(!user)return res.status(401).json({error:"authentication required"});
+  const id=Number(req.params.id);if(!Number.isInteger(id))return res.status(400).json({error:"invalid assessment id"});
+  const submitted=req.body?.answers;
+  if(!submitted || typeof submitted!=="object" || Array.isArray(submitted))return res.status(400).json({error:"answers object is required"});
+  if(!pool)return res.status(201).json({ok:true,score:0,passed:false,results:[]});
+  try{
+    const a=await pool.query("SELECT id,course_id,passing_score,attempt_limit,status FROM assessments WHERE id=$1 AND status='active'",[id]);
+    if(!a.rows[0])return res.status(404).json({error:"assessment not found"});
+    const assessment=a.rows[0];
+    if(assessment.course_id){
+      const enrolled=await pool.query("SELECT id FROM enrollments WHERE user_id=$1 AND course_id=$2",[user.id,assessment.course_id]);
+      if(!enrolled.rows[0])return res.status(403).json({error:"enroll in this course first"});
+    }
+    if(assessment.attempt_limit!==null){
+      const attempts=await pool.query("SELECT COUNT(*)::int AS count FROM assessment_attempts WHERE assessment_id=$1 AND user_id=$2",[id,user.id]);
+      if(attempts.rows[0].count>=assessment.attempt_limit)return res.status(409).json({error:"assessment attempt limit reached"});
+    }
+    const questions=await pool.query("SELECT id,question_type,correct_answer,points,position FROM assessment_questions WHERE assessment_id=$1 ORDER BY position",[id]);
+    if(!questions.rows.length)return res.status(400).json({error:"assessment has no questions"});
+    const normalize=value=>{
+      if(value===null||value===undefined)return "";
+      if(Array.isArray(value))return value.map(v=>String(v).trim().toLowerCase()).sort();
+      if(typeof value==="object")return JSON.stringify(value);
+      return String(value).trim().toLowerCase();
+    };
+    const sameAnswer=(left,right)=>JSON.stringify(normalize(left))===JSON.stringify(normalize(right));
+    let earned=0,total=0;
+    const results=questions.rows.map(q=>{
+      const points=Math.max(0,Number(q.points)||0);total+=points;
+      const answer=submitted[String(q.id)]!==undefined?submitted[String(q.id)]:submitted[q.id];
+      const correct=sameAnswer(answer,q.correct_answer);
+      if(correct)earned+=points;
+      return {question_id:q.id,correct,points:correct?points:0};
+    });
+    const score=total?Math.round((earned/total)*10000)/100:0;
+    const passed=score>=Number(assessment.passing_score||70);
+    const attempt=await pool.query("INSERT INTO assessment_attempts(assessment_id,user_id,score,passed,completed_at) VALUES($1,$2,$3,$4,NOW()) RETURNING id,score,passed,started_at,completed_at",[id,user.id,score,passed]);
+    res.status(201).json({ok:true,attempt:attempt.rows[0],score,passed,results});
+  }catch(e){console.error("Assessment submission failed:",e);res.status(500).json({error:"unable to submit assessment"});}
+});
+
 app.get("/api/learn/projects", async (req,res) => {
   if(!pool)return res.json([]);
   try{
