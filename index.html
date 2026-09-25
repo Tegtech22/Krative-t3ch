@@ -134,9 +134,8 @@ const buttons=[...document.querySelectorAll('.nav button')],views=[...document.q
 function show(id){buttons.forEach(b=>b.classList.toggle('active',b.dataset.view===id));views.forEach(v=>v.classList.toggle('active',v.id===id));window.scrollTo({top:0,behavior:'smooth'})}
 buttons.forEach(b=>b.onclick=()=>show(b.dataset.view));document.querySelectorAll('[data-go]').forEach(b=>b.onclick=()=>show(b.dataset.go));
 document.getElementById('theme').onclick=()=>document.body.classList.toggle('light');
-document.getElementById('courseSearch').oninput=e=>renderCourses(e.target.value);
 document.querySelectorAll('#oppTabs button').forEach(b=>b.onclick=()=>{document.querySelectorAll('#oppTabs button').forEach(x=>x.classList.remove('active'));b.classList.add('active');renderOpp(b.dataset.filter)});
-renderCourses();renderOpp();
+renderOpp();
 const API_BASE="https://kranova-api.onrender.com";
 let authMode="login";
 let authToken=localStorage.getItem("kranova_token")||"";
