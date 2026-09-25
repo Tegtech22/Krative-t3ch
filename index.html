@@ -446,7 +446,7 @@ async function loadLearnCatalog(endpoint,q,type){
     const url=endpoint+(q?"?q="+encodeURIComponent(q):"");const r=await fetch(API_BASE+url);const d=await r.json();if(!r.ok)throw new Error(d.error||"Unable to load "+type);
     const rows=Array.isArray(d)?d:(d.items||d[type]||[]);
     box.innerHTML='<div class="section-title"><div class="eyebrow">'+escapeHtml(type.toUpperCase())+'</div><h2>'+escapeHtml(type==="courses"?"Courses":type==="paths"?"Learning Paths":"Academies")+'</h2></div><div class="cards">'+(rows.length?rows.map(x=>{
-      const action=type==="courses"?'<button class="pill" onclick="openLearnCourse('+x.id+')">View course</button>':type==="academies"?'<button class="pill" onclick="openLearnAcademy(\''+escapeJs(x.slug||"")+\')">Explore academy</button>':'<button class="pill" onclick="openLearnPath('+x.id+')">View path</button>';
+      const action=type==="courses"?'<button class="pill" onclick="openLearnCourse('+x.id+')">View course</button>':type==="academies"?'<button class="pill" onclick="openLearnAcademy(\''+escapeJs(x.slug||"")+'\')">Explore academy</button>':'<button class="pill" onclick="openLearnPath('+x.id+')">View path</button>';
       return learnCard(x.name||x.title,x.description||x.short_description,{tag:type==="courses"?"COURSE":type==="paths"?"PATH":"ACADEMY",level:x.level,minutes:x.estimated_minutes,count:x.course_count?x.course_count+" courses":""},action);
     }).join(""):'<div class="empty">No matching learning resources found.</div>')+'</div>';
   }catch(e){box.innerHTML='<div class="empty">'+escapeHtml(e.message)+'</div>';}
