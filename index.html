@@ -295,6 +295,7 @@ async function loadAdmin(){
     if(!kr.ok||!ur.ok)return;
     const knowledge=await kr.json(),users=await ur.json();
     document.getElementById("knowledgeList").innerHTML=knowledge.length?knowledge.map(k=>'<article class="card" style="margin-top:10px"><span class="tag">'+escapeHtml(k.category)+'</span><h3>'+escapeHtml(k.title)+'</h3><p>'+escapeHtml(k.answer||k.content)+'</p><small class="muted">'+escapeHtml(k.source||"Admin")+' · '+(k.verified?"Verified":"Unverified")+' · '+(k.active?"Active":"Archived")+'</small><div class="actions">'+(k.active?'<button class="pill" onclick="archiveKnowledge('+k.id+')">Archive</button>':'')+'</div></article>').join(""):'<div class="empty">No knowledge entries yet.</div>';
+    loadProjectReviews();
     document.getElementById("roleList").innerHTML=users.map(u=>'<article class="card" style="margin-top:10px;display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap"><div><strong>'+escapeHtml(u.name)+'</strong><p class="muted">'+escapeHtml(u.email)+'</p></div><select onchange="changeRole('+u.id+',this.value)" style="background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:9px;padding:9px">'+["user","instructor","mentor","knowledge_contributor","moderator","admin","super_admin"].map(r=>'<option '+(u.role===r?"selected":"")+' value="'+r+'">'+r+'</option>').join("")+'</select></article>').join("");
   }catch(e){console.warn("Admin centre unavailable",e);}
 }
