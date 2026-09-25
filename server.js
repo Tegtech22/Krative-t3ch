@@ -576,6 +576,213 @@ app.post("/api/community/posts/:id/comments", async (req,res) => {
   if(!pool)return res.status(201).json({id:Date.now(),post_id:postId,content,user_id:user.id,name:user.name,created_at:new Date().toISOString()});
   try{const post=await pool.query("SELECT id FROM posts WHERE id=$1",[postId]);if(!post.rows[0])return res.status(404).json({error:"post not found"});const {rows}=await pool.query("INSERT INTO comments(post_id,user_id,content) VALUES($1,$2,$3) RETURNING id,content,created_at",[postId,user.id,content]);res.status(201).json({...rows[0],post_id:postId,user_id:user.id,name:user.name});}catch(e){res.status(500).json({error:"unable to create comment"});}
 });
+
+/* =========================
+   Kranova Learn API
+   ========================= */
+
+app.get("/api/learn/academies", async (_req,res) => {
+  if(!pool)return res.json([]);
+  try{
+    const {rows}=await pool.query("SELECT a.id,a.slug,a.name,a.description,a.icon,a.cover_image,a.category,a.status,COUNT(DISTINCT c.id)::int AS course_count,COUNT(DISTINCT p.id)::int AS path_count FROM learning_academies a LEFT JOIN courses c ON c.academy_id=a.id AND c.status='active' LEFT JOIN learning_paths p ON p.academy_id=a.id AND p.status='active' WHERE a.status='active' GROUP BY a.id ORDER BY a.name");
+    res.json(rows);
+  }catch(e){console.error("Academy lookup failed:",e);res.status(500).json({error:"unable to load academies"});}
+});
+
+app.get("/api/learn/academies/:slug", async (req,res) => {
+  if(!pool)return res.status(404).json({error:"academy not found"});
+  try{
+    const a=await pool.query("SELECT id,slug,name,description,icon,cover_image,category,status FROM learning_academies WHERE slug=$1 AND status='active'",[String(req.params.slug).trim()]);
+    if(!a.rows[0])return res.status(404).json({error:"academy not found"});
+    const [paths,courses]=await Promise.all([
+      pool.query("SELECT id,slug,title,description,level,estimated_hours,status FROM learning_paths WHERE academy_id=$1 AND status='active' ORDER BY title",[a.rows[0].id]),
+      pool.query("SELECT id,slug,title,short_description,description,level,estimated_minutes,thumbnail,is_free,status FROM courses WHERE academy_id=$1 AND status='active' ORDER BY title",[a.rows[0].id])
+    ]);
+    res.json({...a.rows[0],paths:paths.rows,courses:courses.rows});
+  }catch(e){console.error("Academy detail failed:",e);res.status(500).json({error:"unable to load academy"});}
+});
+
+app.get("/api/learn/paths", async (req,res) => {
+  if(!pool)return res.json([]);
+  try{
+    const params=[],where=["p.status='active'"];
+    if(req.query.academy_id){const id=Number(req.query.academy_id);if(!Number.isInteger(id))return res.status(400).json({error:"invalid academy id"});params.push(id);where.push("p.academy_id=$"+params.length);}
+    const {rows}=await pool.query("SELECT p.id,p.slug,p.title,p.description,p.level,p.estimated_hours,a.id AS academy_id,a.slug AS academy_slug,a.name AS academy_name,COUNT(lpc.course_id)::int AS course_count FROM learning_paths p JOIN learning_academies a ON a.id=p.academy_id LEFT JOIN learning_path_courses lpc ON lpc.path_id=p.id WHERE "+where.join(" AND ")+" GROUP BY p.id,a.id ORDER BY a.name,p.title",params);
+    res.json(rows);
+  }catch(e){console.error("Learning path lookup failed:",e);res.status(500).json({error:"unable to load learning paths"});}
+});
+
+app.get("/api/learn/paths/:id", async (req,res) => {
+  const id=Number(req.params.id);if(!Number.isInteger(id))return res.status(400).json({error:"invalid path id"});
+  if(!pool)return res.status(404).json({error:"learning path not found"});
+  try{
+    const p=await pool.query("SELECT p.id,p.slug,p.title,p.description,p.level,p.estimated_hours,a.id AS academy_id,a.slug AS academy_slug,a.name AS academy_name FROM learning_paths p JOIN learning_academies a ON a.id=p.academy_id WHERE p.id=$1 AND p.status='active'",[id]);
+    if(!p.rows[0])return res.status(404).json({error:"learning path not found"});
+    const courses=await pool.query("SELECT c.id,c.slug,c.title,c.short_description,c.description,c.level,c.estimated_minutes,c.thumbnail,c.is_free,lpc.position,lpc.required FROM learning_path_courses lpc JOIN courses c ON c.id=lpc.course_id WHERE lpc.path_id=$1 AND c.status='active' ORDER BY lpc.position",[id]);
+    res.json({...p.rows[0],courses:courses.rows});
+  }catch(e){console.error("Learning path detail failed:",e);res.status(500).json({error:"unable to load learning path"});}
+});
+
+app.get("/api/learn/courses", async (req,res) => {
+  if(!pool)return res.json(memory.courses);
+  try{
+    const params=[],where=["c.status='active'"];
+    if(req.query.academy_id){const id=Number(req.query.academy_id);if(!Number.isInteger(id))return res.status(400).json({error:"invalid academy id"});params.push(id);where.push("c.academy_id=$"+params.length);}
+    if(req.query.level){params.push(String(req.query.level));where.push("LOWER(c.level)=LOWER($"+params.length+")");}
+    if(req.query.q){params.push("%"+String(req.query.q).trim()+"%");where.push("(c.title ILIKE $"+params.length+" OR c.short_description ILIKE $"+params.length+" OR c.description ILIKE $"+params.length+")");}
+    const {rows}=await pool.query("SELECT c.id,c.slug,c.category,c.title,c.short_description,c.description,c.level,c.estimated_minutes,c.thumbnail,c.is_free,a.id AS academy_id,a.slug AS academy_slug,a.name AS academy_name,COUNT(DISTINCT m.id)::int AS module_count,COUNT(DISTINCT l.id)::int AS lesson_count FROM courses c LEFT JOIN learning_academies a ON a.id=c.academy_id LEFT JOIN course_modules m ON m.course_id=c.id LEFT JOIN lessons l ON l.course_id=c.id WHERE "+where.join(" AND ")+" GROUP BY c.id,a.id ORDER BY c.created_at DESC,c.id DESC",params);
+    res.json(rows);
+  }catch(e){console.error("Learn course lookup failed:",e);res.status(500).json({error:"unable to load courses"});}
+});
+
+app.get("/api/learn/courses/:id", async (req,res) => {
+  const id=Number(req.params.id);if(!Number.isInteger(id))return res.status(400).json({error:"invalid course id"});
+  if(!pool)return res.status(404).json({error:"course not found"});
+  try{
+    const c=await pool.query("SELECT c.id,c.slug,c.category,c.title,c.short_description,c.description,c.level,c.estimated_minutes,c.thumbnail,c.is_free,c.status,a.id AS academy_id,a.slug AS academy_slug,a.name AS academy_name FROM courses c LEFT JOIN learning_academies a ON a.id=c.academy_id WHERE c.id=$1 AND c.status='active'",[id]);
+    if(!c.rows[0])return res.status(404).json({error:"course not found"});
+    const [modules,skills,projects]=await Promise.all([
+      pool.query("SELECT m.id,m.title,m.description,m.position,COUNT(l.id)::int AS lesson_count FROM course_modules m LEFT JOIN lessons l ON l.module_id=m.id WHERE m.course_id=$1 GROUP BY m.id ORDER BY m.position",[id]),
+      pool.query("SELECT s.id,s.slug,s.name,s.description,s.category,cs.level FROM course_skills cs JOIN skills s ON s.id=cs.skill_id WHERE cs.course_id=$1 ORDER BY s.name",[id]),
+      pool.query("SELECT id,title,description,difficulty,estimated_hours,status FROM learning_projects WHERE course_id=$1 AND status='active' ORDER BY created_at",[id])
+    ]);
+    const user=await getAuthUser(req);let enrollment=null;
+    if(user){const e=await pool.query("SELECT id,enrolled_at,progress,completed_at FROM enrollments WHERE user_id=$1 AND course_id=$2",[user.id,id]);enrollment=e.rows[0]||null;}
+    res.json({...c.rows[0],modules:modules.rows,skills:skills.rows,projects:projects.rows,enrollment});
+  }catch(e){console.error("Learn course detail failed:",e);res.status(500).json({error:"unable to load course"});}
+});
+
+app.get("/api/learn/courses/:id/modules", async (req,res) => {
+  const id=Number(req.params.id);if(!Number.isInteger(id))return res.status(400).json({error:"invalid course id"});
+  if(!pool)return res.json([]);
+  try{
+    const user=await getAuthUser(req);
+    const {rows}=await pool.query("SELECT m.id,m.course_id,m.title,m.description,m.position,COUNT(l.id)::int AS lesson_count,COUNT(lp.lesson_id)::int AS completed_lessons FROM course_modules m LEFT JOIN lessons l ON l.module_id=m.id LEFT JOIN lesson_progress lp ON lp.lesson_id=l.id AND lp.user_id=$1 WHERE m.course_id=$2 GROUP BY m.id ORDER BY m.position",[user?.id||0,id]);
+    res.json(rows);
+  }catch(e){console.error("Module lookup failed:",e);res.status(500).json({error:"unable to load course modules"});}
+});
+
+app.get("/api/learn/modules/:id", async (req,res) => {
+  const id=Number(req.params.id);if(!Number.isInteger(id))return res.status(400).json({error:"invalid module id"});
+  if(!pool)return res.status(404).json({error:"module not found"});
+  try{
+    const m=await pool.query("SELECT m.id,m.course_id,m.title,m.description,m.position,c.title AS course_title FROM course_modules m JOIN courses c ON c.id=m.course_id WHERE m.id=$1",[id]);
+    if(!m.rows[0])return res.status(404).json({error:"module not found"});
+    const user=await getAuthUser(req);
+    const lessons=await pool.query("SELECT l.id,l.title,l.position,CASE WHEN lp.lesson_id IS NULL THEN false ELSE true END AS completed,lp.completed_at FROM lessons l LEFT JOIN lesson_progress lp ON lp.lesson_id=l.id AND lp.user_id=$1 WHERE l.module_id=$2 ORDER BY l.position",[user?.id||0,id]);
+    res.json({...m.rows[0],lessons:lessons.rows});
+  }catch(e){console.error("Module detail failed:",e);res.status(500).json({error:"unable to load module"});}
+});
+
+app.get("/api/learn/lessons/:id", async (req,res) => {
+  const id=Number(req.params.id);if(!Number.isInteger(id))return res.status(400).json({error:"invalid lesson id"});
+  if(!pool)return res.status(404).json({error:"lesson not found"});
+  try{
+    const user=await getAuthUser(req);
+    const l=await pool.query("SELECT l.id,l.course_id,l.module_id,l.title,l.content,l.position,c.title AS course_title,m.title AS module_title,CASE WHEN lp.lesson_id IS NULL THEN false ELSE true END AS completed,lp.completed_at FROM lessons l JOIN courses c ON c.id=l.course_id LEFT JOIN course_modules m ON m.id=l.module_id LEFT JOIN lesson_progress lp ON lp.lesson_id=l.id AND lp.user_id=$1 WHERE l.id=$2",[user?.id||0,id]);
+    if(!l.rows[0])return res.status(404).json({error:"lesson not found"});
+    const activities=await pool.query("SELECT id,activity_type,title,content,configuration,position,points FROM lesson_activities WHERE lesson_id=$1 ORDER BY position",[id]);
+    res.json({...l.rows[0],activities:activities.rows});
+  }catch(e){console.error("Lesson detail failed:",e);res.status(500).json({error:"unable to load lesson"});}
+});
+
+app.get("/api/learn/projects", async (req,res) => {
+  if(!pool)return res.json([]);
+  try{
+    const params=[],where=["p.status='active'"];
+    if(req.query.course_id){const id=Number(req.query.course_id);if(!Number.isInteger(id))return res.status(400).json({error:"invalid course id"});params.push(id);where.push("p.course_id=$"+params.length);}
+    if(req.query.academy_id){const id=Number(req.query.academy_id);if(!Number.isInteger(id))return res.status(400).json({error:"invalid academy id"});params.push(id);where.push("p.academy_id=$"+params.length);}
+    const {rows}=await pool.query("SELECT p.id,p.title,p.description,p.difficulty,p.estimated_hours,p.skills,p.course_id,p.academy_id,c.title AS course_title,a.name AS academy_name FROM learning_projects p LEFT JOIN courses c ON c.id=p.course_id LEFT JOIN learning_academies a ON a.id=p.academy_id WHERE "+where.join(" AND ")+" ORDER BY p.created_at DESC,p.id DESC",params);
+    res.json(rows);
+  }catch(e){console.error("Project lookup failed:",e);res.status(500).json({error:"unable to load projects"});}
+});
+
+app.get("/api/learn/projects/:id", async (req,res) => {
+  const id=Number(req.params.id);if(!Number.isInteger(id))return res.status(400).json({error:"invalid project id"});
+  if(!pool)return res.status(404).json({error:"project not found"});
+  try{
+    const p=await pool.query("SELECT p.id,p.title,p.description,p.instructions,p.difficulty,p.estimated_hours,p.skills,p.course_id,p.academy_id,c.title AS course_title,a.name AS academy_name FROM learning_projects p LEFT JOIN courses c ON c.id=p.course_id LEFT JOIN learning_academies a ON a.id=p.academy_id WHERE p.id=$1 AND p.status='active'",[id]);
+    if(!p.rows[0])return res.status(404).json({error:"project not found"});
+    const user=await getAuthUser(req);let submission=null;
+    if(user){const s=await pool.query("SELECT id,title,description,submission_url,repository_url,content,status,score,feedback,submitted_at,reviewed_at FROM project_submissions WHERE project_id=$1 AND user_id=$2 ORDER BY submitted_at DESC LIMIT 1",[id,user.id]);submission=s.rows[0]||null;}
+    res.json({...p.rows[0],submission});
+  }catch(e){console.error("Project detail failed:",e);res.status(500).json({error:"unable to load project"});}
+});
+
+app.post("/api/learn/projects/:id/submissions", async (req,res) => {
+  const user=await getAuthUser(req);if(!user)return res.status(401).json({error:"authentication required"});
+  const id=Number(req.params.id);if(!Number.isInteger(id))return res.status(400).json({error:"invalid project id"});
+  const title=String(req.body?.title||"").trim(),description=String(req.body?.description||"").trim(),submissionUrl=String(req.body?.submission_url||"").trim(),repositoryUrl=String(req.body?.repository_url||"").trim(),content=String(req.body?.content||"").trim();
+  if(!title&&!content&&!submissionUrl&&!repositoryUrl)return res.status(400).json({error:"submission content is required"});
+  if(!pool)return res.status(201).json({ok:true,status:"submitted"});
+  try{
+    const p=await pool.query("SELECT id FROM learning_projects WHERE id=$1 AND status='active'",[id]);if(!p.rows[0])return res.status(404).json({error:"project not found"});
+    const {rows}=await pool.query("INSERT INTO project_submissions(project_id,user_id,title,description,submission_url,repository_url,content) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id,project_id,title,status,submitted_at",[id,user.id,title,description,submissionUrl,repositoryUrl,content]);
+    res.status(201).json({ok:true,...rows[0]});
+  }catch(e){console.error("Project submission failed:",e);res.status(500).json({error:"unable to submit project"});}
+});
+
+app.get("/api/learn/my-learning", async (req,res) => {
+  const user=await getAuthUser(req);if(!user)return res.status(401).json({error:"authentication required"});
+  if(!pool)return res.json({in_progress:[],completed:[],saved:[],certificates:[],badges:[],skills:[]});
+  try{
+    const [enrolled,saved,certificates,badges,skills]=await Promise.all([
+      pool.query("SELECT c.id,c.slug,c.title,c.short_description,c.level,c.estimated_minutes,e.enrolled_at,e.progress,e.completed_at FROM enrollments e JOIN courses c ON c.id=e.course_id WHERE e.user_id=$1 ORDER BY e.enrolled_at DESC",[user.id]),
+      pool.query("SELECT resource_type,resource_id,created_at FROM saved_learning WHERE user_id=$1 ORDER BY created_at DESC",[user.id]),
+      pool.query("SELECT id,certificate_number,title,course_id,issued_at,expires_at,verification_code,status FROM certificates WHERE user_id=$1 ORDER BY issued_at DESC",[user.id]),
+      pool.query("SELECT b.id,b.slug,b.name,b.description,b.category,ub.awarded_at FROM user_badges ub JOIN badges b ON b.id=ub.badge_id WHERE ub.user_id=$1 ORDER BY ub.awarded_at DESC",[user.id]),
+      pool.query("SELECT s.id,s.slug,s.name,s.description,s.category,us.level,us.evidence_count,us.verified,us.updated_at FROM user_skills us JOIN skills s ON s.id=us.skill_id WHERE us.user_id=$1 ORDER BY us.updated_at DESC",[user.id])
+    ]);
+    res.json({in_progress:enrolled.rows.filter(x=>Number(x.progress||0)<100),completed:enrolled.rows.filter(x=>Number(x.progress||0)>=100),saved:saved.rows,certificates:certificates.rows,badges:badges.rows,skills:skills.rows});
+  }catch(e){console.error("My learning lookup failed:",e);res.status(500).json({error:"unable to load my learning"});}
+});
+
+app.post("/api/learn/save", async (req,res) => {
+  const user=await getAuthUser(req);if(!user)return res.status(401).json({error:"authentication required"});
+  const resourceType=String(req.body?.resource_type||"").trim(),resourceId=Number(req.body?.resource_id);
+  if(!["course","path","project","lesson"].includes(resourceType)||!Number.isInteger(resourceId))return res.status(400).json({error:"valid resource_type and resource_id are required"});
+  if(!pool)return res.json({ok:true,saved:true});
+  try{await pool.query("INSERT INTO saved_learning(user_id,resource_type,resource_id) VALUES($1,$2,$3) ON CONFLICT(user_id,resource_type,resource_id) DO NOTHING",[user.id,resourceType,resourceId]);res.json({ok:true,saved:true});}
+  catch(e){console.error("Save learning failed:",e);res.status(500).json({error:"unable to save learning resource"});}
+});
+
+app.delete("/api/learn/save/:resourceType/:resourceId", async (req,res) => {
+  const user=await getAuthUser(req);if(!user)return res.status(401).json({error:"authentication required"});
+  const type=String(req.params.resourceType),id=Number(req.params.resourceId);
+  if(!["course","path","project","lesson"].includes(type)||!Number.isInteger(id))return res.status(400).json({error:"invalid saved resource"});
+  if(!pool)return res.json({ok:true});
+  try{await pool.query("DELETE FROM saved_learning WHERE user_id=$1 AND resource_type=$2 AND resource_id=$3",[user.id,type,id]);res.json({ok:true});}
+  catch(e){console.error("Remove saved learning failed:",e);res.status(500).json({error:"unable to remove saved resource"});}
+});
+
+app.get("/api/learn/achievements", async (req,res) => {
+  const user=await getAuthUser(req);if(!user)return res.status(401).json({error:"authentication required"});
+  if(!pool)return res.json({certificates:[],badges:[],skills:[],milestones:{}});
+  try{
+    const [certificates,badges,skills,milestones]=await Promise.all([
+      pool.query("SELECT id,certificate_number,title,course_id,issued_at,expires_at,verification_code,status FROM certificates WHERE user_id=$1 ORDER BY issued_at DESC",[user.id]),
+      pool.query("SELECT b.id,b.slug,b.name,b.description,b.category,ub.awarded_at FROM user_badges ub JOIN badges b ON b.id=ub.badge_id WHERE ub.user_id=$1 ORDER BY ub.awarded_at DESC",[user.id]),
+      pool.query("SELECT s.id,s.slug,s.name,s.category,us.level,us.evidence_count,us.verified,us.updated_at FROM user_skills us JOIN skills s ON s.id=us.skill_id WHERE us.user_id=$1 ORDER BY us.updated_at DESC",[user.id]),
+      pool.query("SELECT COUNT(*) FILTER(WHERE progress>0 AND progress<100)::int AS courses_started,COUNT(*) FILTER(WHERE progress=100)::int AS courses_completed FROM enrollments WHERE user_id=$1",[user.id])
+    ]);
+    res.json({certificates:certificates.rows,badges:badges.rows,skills:skills.rows,milestones:milestones.rows[0]||{courses_started:0,courses_completed:0}});
+  }catch(e){console.error("Achievement lookup failed:",e);res.status(500).json({error:"unable to load achievements"});}
+});
+
+app.get("/api/learn/overview", async (req,res) => {
+  const user=await getAuthUser(req);if(!user)return res.status(401).json({error:"authentication required"});
+  if(!pool)return res.json({continue_learning:[],recommended:[],progress:{},next_step:null});
+  try{
+    const [continueLearning,recommended,progress,nextStep]=await Promise.all([
+      pool.query("SELECT c.id,c.slug,c.title,c.short_description,c.level,c.estimated_minutes,e.progress,e.enrolled_at FROM enrollments e JOIN courses c ON c.id=e.course_id WHERE e.user_id=$1 AND e.progress<100 ORDER BY e.enrolled_at DESC LIMIT 6",[user.id]),
+      pool.query("SELECT c.id,c.slug,c.title,c.short_description,c.level,c.estimated_minutes,c.category FROM courses c WHERE c.status='active' AND NOT EXISTS(SELECT 1 FROM enrollments e WHERE e.user_id=$1 AND e.course_id=c.id) ORDER BY c.created_at DESC,c.id DESC LIMIT 6",[user.id]),
+      pool.query("SELECT COUNT(*)::int AS enrolled,COUNT(*) FILTER(WHERE progress>0 AND progress<100)::int AS in_progress,COUNT(*) FILTER(WHERE progress=100)::int AS completed,COALESCE(ROUND(AVG(progress))::int,0) AS average_progress FROM enrollments WHERE user_id=$1",[user.id]),
+      pool.query("SELECT c.id,c.slug,c.title,e.progress FROM enrollments e JOIN courses c ON c.id=e.course_id WHERE e.user_id=$1 AND e.progress<100 ORDER BY e.enrolled_at DESC LIMIT 1",[user.id])
+    ]);
+    res.json({continue_learning:continueLearning.rows,recommended:recommended.rows,progress:progress.rows[0]||{},next_step:nextStep.rows[0]||null});
+  }catch(e){console.error("Learn overview failed:",e);res.status(500).json({error:"unable to load learning overview"});}
+});
+
 app.get("/api/opportunities", async (_req,res) => {
   if (!pool) return res.json(memory.opportunities);
   const { rows } = await pool.query("SELECT id,type,title,category,description FROM opportunities ORDER BY id"); res.json(rows);
