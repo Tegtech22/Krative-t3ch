@@ -113,26 +113,31 @@
 <div class="opp-modal" id="oppModal"><div class="opp-box"><div class="eyebrow">Opportunity</div><h2 id="oppTitle">Opportunity</h2><p class="muted" id="oppDescription"></p><div class="actions"><button class="btn primary" id="oppApply">Apply</button><button class="btn" onclick="closeOpportunity()">Close</button></div><div class="muted" id="oppMsg"></div></div></div><div class="lesson-modal" id="lessonModal"><div class="lesson-box"><div class="eyebrow">Kranova Learning</div><h2 id="lessonTitle">Course lessons</h2><p class="muted" id="lessonIntro"></p><div class="lesson-list" id="lessonList"></div><div class="actions"><button class="btn" onclick="closeLessons()">Close</button></div></div></div><footer>Kranova is a Krative T3ch project. Built around learning, human connection, opportunity and building.</footer>
 </div>
 <script>
-const courses=[
-["Technology","Web Development Foundations","Learn the foundations of building for the web.","Beginner"],
-["Intelligence","Introduction to NOETICA Intelligence","Explore the role of intelligence in the Krative ecosystem.","Foundation"],
-["Business","Entrepreneurship & Innovation","Turn problems into practical opportunities and projects.","Beginner"],
-["Creative","Digital Creation","Develop practical skills for creating digital experiences.","Beginner"],
-["Professional","Communication & Collaboration","Strengthen the skills needed to learn and build with others.","All levels"],
-["Academic","Research Skills","Learn how to investigate questions, organize knowledge and communicate findings.","Foundation"]
-];
 const opportunities=[
 ["Jobs","Technology Assistant","Technology","Explore a role and its requirements."],
 ["Freelance","Web Project","Digital","A project-based opportunity for a web creator."],
 ["Internships","Innovation Intern","Innovation","A learning-focused practical placement."],
 ["Scholarships","Learning Support","Education","A scholarship-style opportunity for further learning."]
 ];
-function cardCourse(c,i){const courseId=(c[4]||i+1);return '<article class="card course"><span class="tag">'+c[0]+'</span><h3>'+c[1]+'</h3><p>'+c[2]+'</p><div class="course-meta"><span>'+c[3]+'</span><button class="pill" onclick="enrollCourse('+courseId+')">Enroll</button></div></article>'}
-function renderCourses(q=''){document.getElementById('courseList').innerHTML=courses.filter(c=>(c[0]+' '+c[1]+' '+c[2]).toLowerCase().includes(q.toLowerCase())).map(cardCourse).join('')||'<div class="empty">No matching learning items.</div>'}
 function renderOpp(filter='All'){document.getElementById('oppList').innerHTML=opportunities.filter(o=>filter==='All'||o[0]===filter).map(o=>'<article class="card"><span class="tag">'+o[0]+'</span><h3>'+o[1]+'</h3><p>'+o[3]+'</p><div class="course-meta"><span>'+o[2]+'</span><button class="pill" onclick="openOpportunity('+o[4]+')">View</button></div></article>').join('')}
 const buttons=[...document.querySelectorAll('.nav button')],views=[...document.querySelectorAll('.view')];
 function show(id){buttons.forEach(b=>b.classList.toggle('active',b.dataset.view===id));views.forEach(v=>v.classList.toggle('active',v.id===id));window.scrollTo({top:0,behavior:'smooth'})}
-buttons.forEach(b=>b.onclick=()=>show(b.dataset.view));document.querySelectorAll('[data-go]').forEach(b=>b.onclick=()=>show(b.dataset.go));
+buttons.forEach(b=>b.onclick=async()=>{
+  const view=b.dataset.view;
+  show(view);
+  if(view==="learn") await loadLearn();
+  else if(view==="opportunities") renderOpp();
+  else if(view==="community") loadCommunity();
+  else if(view==="dashboard"){loadEnrollments();loadApplications();loadProfile();loadIntelligenceMemory();}
+  else if(view==="intelligence") loadIntelligenceHistory();
+  else if(view==="admin" && authToken) loadAdmin();
+});
+document.querySelectorAll('[data-go]').forEach(b=>b.onclick=async()=>{
+  const view=b.dataset.go;
+  show(view);
+  if(view==="learn") await loadLearn();
+  else if(view==="opportunities") renderOpp();
+});
 document.getElementById('theme').onclick=()=>document.body.classList.toggle('light');
 document.querySelectorAll('#oppTabs button').forEach(b=>b.onclick=()=>{document.querySelectorAll('#oppTabs button').forEach(x=>x.classList.remove('active'));b.classList.add('active');renderOpp(b.dataset.filter)});
 renderOpp();
@@ -278,7 +283,8 @@ async function loadEnrollments(){
     const res=await fetch(API_BASE+"/api/me/enrollments",{headers:{Authorization:"Bearer "+authToken}});
     if(!res.ok)return;
     const data=await res.json();
-    document.getElementById("progress").textContent=(data.length*10>100?100:data.length*10)+"%";
+    const overallProgress=data.length?Math.round(data.reduce((sum,c)=>sum+Number(c.progress||0),0)/data.length):0;
+    document.getElementById("progress").textContent=overallProgress+"%";
     document.getElementById("enrollmentList").innerHTML=data.length?data.map(c=>'<div class="card"><span class="tag">'+c.category+'</span><h3>'+c.title+'</h3><p>'+(c.progress||0)+'% complete'+(Number(c.progress)===100?" · Completed":"")+'</p><div style="height:8px;background:var(--bg);border-radius:8px;overflow:hidden;margin:12px 0"><div style="height:100%;width:'+(c.progress||0)+'%;background:var(--blue)"></div></div><button class="pill" onclick="openLessons('+c.id+')">Open lessons</button></div>').join(""):'<div class="empty">You have not enrolled in a course yet.</div>';
   }catch(e){console.warn("Could not load enrollments",e);}
 }
@@ -391,13 +397,12 @@ async function sendIntelligence(input){
 document.getElementById("intelForm").addEventListener("submit",async e=>{e.preventDefault();const input=document.getElementById("intelInput");const value=input.value.trim();if(!value)return;input.value="";await sendIntelligence(value);});
 async function syncBackend(){
   try{
-    const [courseRes,oppRes]=await Promise.all([fetch(API_BASE+"/api/courses"),fetch(API_BASE+"/api/opportunities")]);
-    if(!courseRes.ok||!oppRes.ok) throw new Error("API unavailable");
-    const apiCourses=await courseRes.json(),apiOpps=await oppRes.json();
-    courses.splice(0,courses.length,...apiCourses.map(c=>[c.category,c.title,c.description,c.level,c.id]));
+    const oppRes=await fetch(API_BASE+"/api/opportunities");
+    if(!oppRes.ok)throw new Error("API unavailable");
+    const apiOpps=await oppRes.json();
     opportunities.splice(0,opportunities.length,...apiOpps.map(o=>[o.type,o.title,o.category,o.description,o.id]));
-    renderCourses();renderOpp();
-  }catch(e){console.warn("Kranova API unavailable; using bundled demo data.",e)}
+    renderOpp();
+  }catch(e){console.warn("Kranova API unavailable; using bundled opportunity data.",e)}
 }
 syncBackend();
 restoreAuth();
