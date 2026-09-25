@@ -303,7 +303,7 @@ async function initDb() {
     ["academic","Academic","Develop research, investigation and evidence-based learning skills.","⌘","Academic"]
   ];
   for (const a of academySeed) await pool.query("INSERT INTO learning_academies(slug,name,description,icon,category) VALUES($1,$2,$3,$4,$5) ON CONFLICT(slug) DO UPDATE SET name=EXCLUDED.name,description=EXCLUDED.description,icon=EXCLUDED.icon,category=EXCLUDED.category,updated_at=NOW()",a);
-  await pool.query("UPDATE courses SET academy_id=(SELECT id FROM learning_academies WHERE lower(slug)=lower(regexp_replace(category,'[^a-zA-Z0-9]+','','g'))) WHERE academy_id IS NULL AND EXISTS (SELECT 1 FROM learning_academies WHERE lower(slug)=lower(regexp_replace(category,'[^a-zA-Z0-9]+','','g')))");
+  await pool.query("UPDATE courses SET academy_id=(SELECT id FROM learning_academies WHERE lower(slug)=lower(regexp_replace(category,'[^a-zA-Z0-9]+','','g')) ORDER BY id LIMIT 1) WHERE academy_id IS NULL AND EXISTS (SELECT 1 FROM learning_academies WHERE lower(slug)=lower(regexp_replace(category,'[^a-zA-Z0-9]+','','g')))");
   await pool.query("UPDATE courses SET slug=lower(regexp_replace(title,'[^a-zA-Z0-9]+','-','g')) WHERE slug IS NULL");
   await pool.query("ALTER TABLE lessons ADD COLUMN IF NOT EXISTS module_id BIGINT REFERENCES course_modules(id) ON DELETE CASCADE");
   const courseRows = await pool.query("SELECT id,title FROM courses ORDER BY id");
