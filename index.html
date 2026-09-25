@@ -91,6 +91,11 @@
 <div id="knowledgeList" style="margin-top:16px"><div class="empty">Loading knowledge...</div></div>
 </div>
 <div class="panel" style="margin-top:18px;padding:20px">
+<h3>Project Reviews</h3><p class="muted">Review submitted learning projects and turn approved work into verified practical skill evidence.</p>
+<div class="actions"><select id="projectReviewFilter" onchange="loadProjectReviews()" style="padding:10px;border-radius:10px"><option value="">All submissions</option><option value="submitted">Submitted</option><option value="needs_revision">Needs revision</option><option value="approved">Approved</option><option value="rejected">Rejected</option></select></div>
+<div id="projectReviewList"><div class="empty">Loading project submissions...</div></div>
+</div>
+<div class="panel" style="margin-top:18px;padding:20px">
 <h3>Roles & Permissions</h3><p class="muted">Assign platform roles to people. Super admins retain full control.</p>
 <div id="roleList"><div class="empty">Loading users...</div></div>
 </div>
@@ -516,7 +521,24 @@ async function openLearnAssessment(id){
 async function openLearnPath(id){
   try{const r=await fetch(API_BASE+"/api/learn/paths/"+id);const d=await r.json();if(!r.ok)throw new Error(d.error||"Unable to load path");const rows=d.courses||d.items||[];document.getElementById("learnOverviewPanel").style.display="none";document.getElementById("learnCatalogPanel").style.display="block";document.getElementById("learnCatalog").innerHTML='<div class="section-title"><div class="eyebrow">LEARNING PATH</div><h2>'+escapeHtml(d.title||d.name||"Path")+'</h2><p class="lead">'+escapeHtml(d.description||"")+'</p></div><div class="cards">'+(rows.length?rows.map(c=>learnCard(c.title,c.short_description||c.description,{tag:"PATH COURSE",level:c.level,minutes:c.estimated_minutes},'<button class="pill" onclick="openLearnCourse('+c.id+')">Open course</button>')).join(""):'<div class="empty">Courses are being added to this path.</div>')+'</div>';}catch(e){alert(e.message);}
 }
-async function openLearnProject(id){try{const r=await fetch(API_BASE+"/api/learn/projects/"+id);const d=await r.json();if(!r.ok)throw new Error(d.error||"Unable to load project");alert((d.title||"Project")+"\n\n"+(d.description||""));}catch(e){alert(e.message);}}
+async function openLearnProject(id){
+  const modal=document.getElementById("lessonModal"),box=document.getElementById("lessonList"),title=document.getElementById("lessonTitle"),intro=document.getElementById("lessonIntro");
+  modal.style.display="grid";box.innerHTML='<div class="empty">Loading project...</div>';
+  try{
+    const r=await fetch(API_BASE+"/api/learn/projects/"+id,{headers:authToken?{Authorization:"Bearer "+authToken}:{}});const d=await r.json();if(!r.ok)throw new Error(d.error||"Unable to load project");
+    title.textContent=d.title||"Learning Project";intro.textContent=(d.course_title||"Kranova Project")+" · "+(d.difficulty||"");
+    const skills=Array.isArray(d.skills)?d.skills.map(s=>escapeHtml(typeof s==="string"?s:(s.name||s.slug||""))).join(", "):"";
+    const sub=d.submission;
+    box.innerHTML='<div class="panel" style="padding:20px"><div class="eyebrow">BUILD</div><h2>'+escapeHtml(d.title||"Project")+'</h2><p class="lead">'+escapeHtml(d.description||"")+'</p><h3>Instructions</h3><div style="white-space:pre-wrap;line-height:1.7">'+escapeHtml(d.instructions||"")+'</div><p class="muted" style="margin-top:16px">Difficulty: '+escapeHtml(d.difficulty||"")+(d.estimated_hours?" · "+d.estimated_hours+" hours":"")+(skills?" · Skills: "+skills:"")+'</p></div>'+
+      '<div class="panel" style="padding:20px;margin-top:14px"><div class="eyebrow">PROOF OF SKILL</div><h3>Submit your project</h3><p class="muted">Submit your work for review. An approved project can become verified practical skill evidence.</p>'+
+      (sub?'<div class="panel" style="padding:14px;background:var(--bg);margin-bottom:14px"><strong>Latest submission: '+escapeHtml(sub.status||"submitted")+'</strong>'+(sub.score!==null&&sub.score!==undefined?" · Score: "+sub.score:"")+(sub.feedback?"<p class=\"muted\">Feedback: "+escapeHtml(sub.feedback)+"</p>":"")+'</div>':"")+
+      (authToken?'<form id="projectSubmissionForm"><input class="input" name="title" placeholder="Submission title" required style="width:100%;margin-bottom:10px"><textarea class="input" name="description" placeholder="What did you build? What did you learn?" style="width:100%;min-height:90px;margin-bottom:10px"></textarea><input class="input" name="submission_url" placeholder="Live project URL (optional)" style="width:100%;margin-bottom:10px"><input class="input" name="repository_url" placeholder="Repository URL (optional)" style="width:100%;margin-bottom:10px"><textarea class="input" name="content" placeholder="Describe or paste your project evidence..." required style="width:100%;min-height:140px;margin-bottom:10px"></textarea><button class="btn primary" type="submit">Submit project</button></form>':'<button class="btn primary" onclick="openAuth(\'login\')">Sign in to submit</button>')+'</div>';
+    document.getElementById("projectSubmissionForm")?.addEventListener("submit",async e=>{
+      e.preventDefault();const f=e.currentTarget,body=Object.fromEntries(new FormData(f).entries());
+      try{const sr=await fetch(API_BASE+"/api/learn/projects/"+id+"/submissions",{method:"POST",headers:{"Content-Type":"application/json",Authorization:"Bearer "+authToken},body:JSON.stringify(body)});const out=await sr.json();if(!sr.ok)throw new Error(out.error||"Unable to submit project");openLearnProject(id);}catch(err){alert(err.message);}
+    });
+  }catch(e){box.innerHTML='<div class="empty">'+escapeHtml(e.message)+'</div>';}
+}
 async function loadLearnMyLearning(){
   document.getElementById("learnOverviewPanel").style.display="none";document.getElementById("learnCatalogPanel").style.display="block";const box=document.getElementById("learnCatalog");
   if(!authToken){box.innerHTML='<div class="empty">Sign in to see your My Learning space.</div>';return;}
@@ -525,6 +547,14 @@ async function loadLearnMyLearning(){
     const rows=[...(d.in_progress||[]),...(d.completed||[])];
     box.innerHTML='<div class="section-title"><div class="eyebrow">MY KRANOVA</div><h2>My Learning</h2><p class="lead">Continue learning, revisit completed work and keep building proof of skill.</p></div><div class="cards">'+(rows.length?rows.map(c=>'<article class="card learn-card"><div class="grow"><span class="tag">'+(Number(c.progress||0)>=100?"COMPLETED":"IN PROGRESS")+'</span><h3>'+escapeHtml(c.title)+'</h3><p>'+escapeHtml(c.short_description||c.description||"")+'</p><div class="progress-line"><span style="width:'+(Number(c.progress)||0)+'%"></span></div><small class="muted">'+(Number(c.progress)||0)+'% complete</small></div><div class="actions"><button class="pill" onclick="openLearnCourse('+c.id+')">'+(Number(c.progress||0)>=100?"Review":"Continue")+'</button></div></article>').join(""):'<div class="empty">No courses yet. Explore Courses to begin.</div>')+'</div>';
   }catch(e){box.innerHTML='<div class="empty">'+escapeHtml(e.message)+'</div>';}}
+async function loadProjectReviews(){
+  const box=document.getElementById("projectReviewList");if(!box)return;
+  try{const filter=document.getElementById("projectReviewFilter")?.value||"";const url=API_BASE+"/api/admin/learning/projects/submissions"+(filter?"?status="+encodeURIComponent(filter):"");const r=await fetch(url,{headers:{Authorization:"Bearer "+authToken}});const rows=await r.json();if(!r.ok)throw new Error(rows.error||"Unable to load project submissions");
+  box.innerHTML=rows.length?rows.map(s=>'<div class="panel" style="padding:16px;margin-top:10px"><div class="tag">'+escapeHtml(s.status)+'</div><h3>'+escapeHtml(s.project_title)+'</h3><p><strong>'+escapeHtml(s.user_name||s.user_email||"Learner")+'</strong> · '+escapeHtml(s.title||"Untitled submission")+'</p><p class="muted">'+escapeHtml(s.description||s.content||"")+'</p>'+(s.submission_url?'<p><a href="'+escapeHtml(s.submission_url)+'" target="_blank" rel="noopener">Live project</a></p>':"")+(s.repository_url?'<p><a href="'+escapeHtml(s.repository_url)+'" target="_blank" rel="noopener">Repository</a></p>':"")+'<div class="actions"><input id="score_'+s.id+'" type="number" min="0" max="100" placeholder="Score" style="width:100px"><input id="feedback_'+s.id+'" placeholder="Feedback" style="flex:1"><button class="pill" onclick="reviewProject('+s.id+',\'approved\')">Approve</button><button class="pill" onclick="reviewProject('+s.id+',\'needs_revision\')">Needs revision</button><button class="pill" onclick="reviewProject('+s.id+',\'rejected\')">Reject</button></div></div>').join(""):'<div class="empty">No project submissions.</div>';
+  }catch(e){box.innerHTML='<div class="empty">'+escapeHtml(e.message)+'</div>';}}
+async function reviewProject(id,status){
+  const score=document.getElementById("score_"+id)?.value;const feedback=document.getElementById("feedback_"+id)?.value||"";
+  try{const r=await fetch(API_BASE+"/api/admin/learning/projects/submissions/"+id+"/review",{method:"PUT",headers:{"Content-Type":"application/json",Authorization:"Bearer "+authToken},body:JSON.stringify({status,score:score===""?null:Number(score),feedback})});const d=await r.json();if(!r.ok)throw new Error(d.error||"Unable to review project");alert(status==="approved"&&d.certificate?"Project approved and certificate issued.":"Project review saved.");loadProjectReviews();loadLearnAchievements();}catch(e){alert(e.message);}}
 async function loadLearnAchievements(){
   document.getElementById("learnOverviewPanel").style.display="none";document.getElementById("learnCatalogPanel").style.display="block";const box=document.getElementById("learnCatalog");
   if(!authToken){box.innerHTML='<div class="empty">Sign in to see your achievements.</div>';return;}
