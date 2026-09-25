@@ -588,9 +588,21 @@ async function loadLearnAchievements(){
       (badges.length?badges.map(b=>'<div class="learn-module"><strong>'+escapeHtml(b.name||"Badge")+'</strong><p class="muted">'+escapeHtml(b.description||"")+'</p></div>').join(""):'<div class="empty">No badges awarded yet.</div>')+
       '</div>';
   }catch(e){box.innerHTML='<div class="empty">'+escapeHtml(e.message)+'</div>';}}
-function renderLearnPractice(){
+async function renderLearnPractice(){
   document.getElementById("learnOverviewPanel").style.display="none";document.getElementById("learnCatalogPanel").style.display="block";
-  document.getElementById("learnCatalog").innerHTML='<div class="section-title"><div class="eyebrow">PRACTICE</div><h2>Move knowledge into action.</h2><p class="lead">Challenges, exercises, assessments and projects will sit here as first-class learning activities.</p></div><div class="cards"><div class="card"><span class="tag">CHALLENGES</span><h3>Short challenges</h3><p>Test an idea quickly and get immediate feedback.</p></div><div class="card"><span class="tag">PROJECTS</span><h3>Build something real</h3><p>Turn lessons into practical work that can become proof of skill.</p></div><div class="card"><span class="tag">ASSESSMENTS</span><h3>Prove what you know</h3><p>Assessments will measure understanding and practical ability.</p></div></div>';
+  const box=document.getElementById("learnCatalog");
+  box.innerHTML='<div class="empty">Loading practice...</div>';
+  try{
+    const [ar,pr]=await Promise.all([fetch(API_BASE+"/api/learn/assessments"),fetch(API_BASE+"/api/learn/projects")]);
+    const assessments=await ar.json(),projects=await pr.json();
+    if(!ar.ok)throw new Error(assessments.error||"Unable to load assessments");
+    if(!pr.ok)throw new Error(projects.error||"Unable to load projects");
+    box.innerHTML='<div class="section-title"><div class="eyebrow">PRACTICE</div><h2>Move knowledge into action.</h2><p class="lead">Practice through assessments and real projects, then turn demonstrated ability into proof of skill.</p></div>'+
+      '<div class="section-title" style="margin-top:24px"><div class="eyebrow">ASSESSMENTS</div><h2>Check your understanding.</h2></div>'+
+      '<div class="cards">'+(assessments.length?assessments.map(a=>learnCard(a.title,a.description,{tag:"ASSESSMENT",minutes:"",count:(a.question_count||0)+" questions"},'<button class="pill" onclick="openLearnAssessment('+a.id+')">Start assessment</button>')).join(""):'<div class="empty">No assessments are available yet.</div>')+'</div>'+
+      '<div class="section-title" style="margin-top:24px"><div class="eyebrow">PROJECTS</div><h2>Build something real.</h2></div>'+
+      '<div class="cards">'+(projects.length?projects.map(p=>learnCard(p.title,p.description,{tag:"PROJECT",level:p.difficulty,minutes:p.estimated_hours?p.estimated_hours+" hrs":"",count:(p.skills||[]).length+" skills"},'<button class="pill" onclick="openLearnProject('+p.id+')">View project</button>')).join(""):'<div class="empty">No practice projects are available yet.</div>')+'</div>';
+  }catch(e){box.innerHTML='<div class="empty">'+escapeHtml(e.message)+'</div>';}
 }
 function selectLearnTab(tab){
   learnTab=tab;document.querySelectorAll(".learn-tabs button").forEach(b=>b.classList.toggle("active",b.dataset.learnTab===tab));loadLearn();
