@@ -1,0 +1,29 @@
+name: KIA End-to-End Intelligence Test
+
+on:
+  workflow_dispatch:
+    inputs:
+      e2e_token:
+        description: "KIA_E2E_TEST_TOKEN configured on Render"
+        required: true
+        type: string
+
+jobs:
+  kia-e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run KIA → NOETICA → Krative Core integration test
+        env:
+          E2E_TOKEN: ${{ inputs.e2e_token }}
+        run: |
+          set -euo pipefail
+          curl --fail-with-body --silent --show-error \
+            -X POST \
+            -H "Content-Type: application/json" \
+            -H "X-KIA-E2E-TOKEN: ${E2E_TOKEN}" \
+            -d '{"input":"E2E integration test: explain in one sentence what Krative Core does."}' \
+            https://kia-krative-intelligence-assistant.onrender.com/api/test/e2e \
+            | tee response.json
+
+          jq -e '.passed == true' response.json
+          echo "KIA → NOETICA → Krative Core integration test PASSED"
