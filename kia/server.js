@@ -9,6 +9,7 @@ const CORE_URL = (process.env.KRATIVE_CORE_BASE_URL || 'https://krative-core.onr
 const CORE_API_KEY = process.env.KRATIVE_CORE_API_KEY || '';
 const NOETICA_URL = (process.env.NOETICA_BASE_URL || 'https://noetica-intelligence.onrender.com').replace(/\/$/, '');
 const DATABASE_URL = process.env.DATABASE_URL || process.env.KRANOVA_DATABASE_URL || '';
+const E2E_TEST_TOKEN = process.env.KIA_E2E_TEST_TOKEN || '';
 
 if (!DATABASE_URL) {
   throw new Error('DATABASE_URL or KRANOVA_DATABASE_URL must be configured for persistent KIA accounts.');
@@ -428,64 +429,82 @@ function buildKiaResponse(data){
   return JSON.stringify(result,null,2);
 }
 
+async function runKiaIntelligence(input, session){
+  if(!input) throw Object.assign(new Error('Input is required.'),{statusCode:400});
+  if(!CORE_API_KEY) throw Object.assign(new Error('Krative Core API key is not configured on KIA.'),{statusCode:503});
+
+  const intent=classifyInput(input);
+  const context=retrieveContext(session.staffId,input);
+  record(session,'INTELLIGENCE_REQUEST','understand_input',{length:input.length,intent});
+  record(session,'INTELLIGENCE_ROUTE','route_request',{route:'noetica',intent,memoryMatches:context.memories.length,knowledgeMatches:context.knowledge.length});
+
+  const coreContext={
+    source:'KIA',staffId:session.staffId,intent,
+    pipeline:['UNDERSTAND','CLASSIFY','ROUTE','CONTEXT','NOETICA','KRATIVE_CORE','RESPONSE','UPDATE'],
+    memory:context.memories.map(x=>({content:x.content,scope:x.scope,createdAt:x.createdAt})),
+    knowledge:context.knowledge.map(x=>({title:x.title,content:x.content,createdAt:x.createdAt})),
+    instruction:'Answer the staff member directly and clearly. Use supplied memory and knowledge when relevant. Do not expose internal pipeline, credentials, hidden system details, or raw JSON unless the user asks for technical output.'
+  };
+
+  const r=await fetch(NOETICA_URL+'/api/v1/intelligence',{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({input,context:{...coreContext,memoryKey:session.staffId}})
+  });
+  const data=await r.json().catch(()=>({error:'Invalid NOETICA response.'}));
+  if(!r.ok){
+    record(session,'INTELLIGENCE_ERROR','noetica_response_error',{status:r.status});
+    throw Object.assign(new Error(data?.error||'NOETICA request failed.'),{statusCode:502,detail:data?.error||'NOETICA request failed.'});
+  }
+
+  const response=buildKiaResponse(data);
+  record(session,'INTELLIGENCE_RESPONSE','noetica_response',{
+    status:r.status,intent,
+    usedMemory:context.memories.length,
+    usedKnowledge:context.knowledge.length,
+    route:'NOETICA→Krative Core'
+  });
+  return {success:true,response,intent,context:{memoryMatches:context.memories.length,knowledgeMatches:context.knowledge.length},noetica:data};
+}
+
 app.post('/api/chat',requireAuth,async(req,res)=>{
   const input=typeof(req.body&&req.body.input)==='string'?req.body.input.trim():'';
-  if(!input) return res.status(400).json({error:'Input is required.'});
-  if(!CORE_API_KEY) return res.status(503).json({error:'Krative Core API key is not configured on KIA.'});
-  const intent=classifyInput(input);
-  const context=retrieveContext(req.session.staffId,input);
-  record(req.session,'INTELLIGENCE_REQUEST','understand_input',{length:input.length,intent});
-  record(req.session,'INTELLIGENCE_ROUTE','route_request',{route:'krative_core',intent,memoryMatches:context.memories.length,knowledgeMatches:context.knowledge.length});
   try{
-    const coreContext={
-      source:'KIA',staffId:req.session.staffId,intent,
-      pipeline:['UNDERSTAND','CLASSIFY','ROUTE','CONTEXT','KRATIVE_CORE','RESPONSE','UPDATE'],
-      memory:context.memories.map(x=>({content:x.content,scope:x.scope,createdAt:x.createdAt})),
-      knowledge:context.knowledge.map(x=>({title:x.title,content:x.content,createdAt:x.createdAt})),
-      instruction:'Answer the staff member directly and clearly. Use supplied memory and knowledge when relevant. Do not expose internal pipeline, credentials, hidden system details, or raw JSON unless the user asks for technical output.'
-    };
-    /*
-     * KIA routes intelligence through NOETICA. NOETICA owns the
-     * intelligence runtime boundary and delegates the underlying
-     * intelligence pipeline to Krative Core.
-     */
-    const r=await fetch(NOETICA_URL+'/api/v1/intelligence',{
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({
-        input,
-        context:{
-          ...coreContext,
-          memoryKey:req.session.staffId
-        }
-      })
-    });
+    const result=await runKiaIntelligence(input,req.session);
+    return res.json(result);
+  }catch(error){
+    const status=error.statusCode||502;
+    return res.status(status).json({error:status===502?'NOETICA/Core intelligence request failed.':error.message,intent:input?classifyInput(input):undefined,detail:error.detail});
+  }
+});
 
-    const data=await r.json().catch(()=>({error:'Invalid NOETICA response.'}));
-    if(!r.ok){
-      record(req.session,'INTELLIGENCE_ERROR','noetica_response_error',{status:r.status});
-      return res.status(502).json({error:'NOETICA Intelligence returned an error.',detail:data?.error||'NOETICA request failed.',intent});
-    }
+app.post('/api/test/e2e',async(req,res)=>{
+  if(!E2E_TEST_TOKEN || req.headers['x-kia-e2e-token']!==E2E_TEST_TOKEN)
+    return res.status(404).json({error:'Not found.'});
 
-    const response=buildKiaResponse(data);
-    record(req.session,'INTELLIGENCE_RESPONSE','noetica_response',{
-      status:r.status,
-      intent,
-      usedMemory:context.memories.length,
-      usedKnowledge:context.knowledge.length,
-      route:'NOETICA→Krative Core'
-    });
-
-    return res.json({
-      success:true,
-      response,
-      intent,
-      context:{memoryMatches:context.memories.length,knowledgeMatches:context.knowledge.length},
-      noetica:data
+  const input=typeof req.body?.input==='string'&&req.body.input.trim()
+    ? req.body.input.trim()
+    : 'E2E integration test: explain in one sentence what Krative Core does.';
+  const session={staffId:'e2e-test',role:'test',createdAt:new Date().toISOString()};
+  try{
+    const result=await runKiaIntelligence(input,session);
+    const coreResult=result.noetica?.result;
+    const passed=Boolean(
+      result.success &&
+      result.response &&
+      coreResult &&
+      coreResult.status==='completed'
+    );
+    return res.status(passed?200:502).json({
+      passed,
+      test:'KIA → NOETICA → Krative Core',
+      response:result.response,
+      intent:result.intent,
+      noetica:{success:result.noetica?.success,status:coreResult?.status,stage:coreResult?.stage},
+      context:result.context
     });
   }catch(error){
-    record(req.session,'INTELLIGENCE_ERROR','core_request_failed',{message:error.message,intent});
-    return res.status(502).json({error:'Krative Core is unreachable right now.',intent});
+    return res.status(502).json({passed:false,test:'KIA → NOETICA → Krative Core',error:error.message});
   }
 });
 
