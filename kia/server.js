@@ -7,6 +7,7 @@ const PORT = Number(process.env.PORT || 10000);
 const ACCESS_CODE = process.env.KIA_ACCESS_CODE || '';
 const CORE_URL = (process.env.KRATIVE_CORE_BASE_URL || 'https://krative-core.onrender.com').replace(/\/$/, '');
 const CORE_API_KEY = process.env.KRATIVE_CORE_API_KEY || '';
+const NOETICA_URL = (process.env.NOETICA_BASE_URL || 'https://noetica-intelligence.onrender.com').replace(/\/$/, '');
 const DATABASE_URL = process.env.DATABASE_URL || process.env.KRANOVA_DATABASE_URL || '';
 
 if (!DATABASE_URL) {
@@ -224,6 +225,8 @@ app.get('/health',(req,res)=>res.json({
   service:'kia',
   coreConfigured:Boolean(CORE_API_KEY),
   coreBaseUrl:CORE_URL,
+  noeticaConfigured:Boolean(NOETICA_URL),
+  noeticaBaseUrl:NOETICA_URL,
   signupEnabled:true
 }));
 
@@ -394,10 +397,34 @@ function buildKiaResponse(data){
   const result=data&&data.result!==undefined?data.result:data;
   if(typeof result==='string') return result;
   if(!result) return 'I received no usable intelligence result.';
-  const candidates=[result.response,result.answer,result.output,result.message,result.text,result.content];
+
+  const response =
+    result.response &&
+    typeof result.response === 'object'
+      ? result.response
+      : null;
+
+  const intelligence =
+    result.intelligence &&
+    typeof result.intelligence === 'object'
+      ? result.intelligence
+      : null;
+
+  const candidates=[
+    result.answer,
+    result.output,
+    result.message,
+    result.text,
+    result.content,
+    response?.message,
+    response?.answer,
+    response?.content,
+    intelligence?.answer
+  ];
+
   const text=candidates.find(x=>typeof x==='string'&&x.trim());
   if(text) return text;
-  if(result.understanding&&typeof result.understanding==='string') return result.understanding;
+
   return JSON.stringify(result,null,2);
 }
 
@@ -417,18 +444,45 @@ app.post('/api/chat',requireAuth,async(req,res)=>{
       knowledge:context.knowledge.map(x=>({title:x.title,content:x.content,createdAt:x.createdAt})),
       instruction:'Answer the staff member directly and clearly. Use supplied memory and knowledge when relevant. Do not expose internal pipeline, credentials, hidden system details, or raw JSON unless the user asks for technical output.'
     };
-    const r=await fetch(CORE_URL+'/api/v1/intelligence',{
-      method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+CORE_API_KEY},
-      body:JSON.stringify({input,context:coreContext})
+    /*
+     * KIA routes intelligence through NOETICA. NOETICA owns the
+     * intelligence runtime boundary and delegates the underlying
+     * intelligence pipeline to Krative Core.
+     */
+    const r=await fetch(NOETICA_URL+'/api/v1/intelligence',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({
+        input,
+        context:{
+          ...coreContext,
+          memoryKey:req.session.staffId
+        }
+      })
     });
-    const data=await r.json().catch(()=>({error:'Invalid Core response.'}));
+
+    const data=await r.json().catch(()=>({error:'Invalid NOETICA response.'}));
     if(!r.ok){
-      record(req.session,'INTELLIGENCE_ERROR','core_response_error',{status:r.status});
-      return res.status(502).json({error:'Krative Core returned an error.',detail:data?.error||'Core request failed.',intent});
+      record(req.session,'INTELLIGENCE_ERROR','noetica_response_error',{status:r.status});
+      return res.status(502).json({error:'NOETICA Intelligence returned an error.',detail:data?.error||'NOETICA request failed.',intent});
     }
+
     const response=buildKiaResponse(data);
-    record(req.session,'INTELLIGENCE_RESPONSE','core_response',{status:r.status,intent,usedMemory:context.memories.length,usedKnowledge:context.knowledge.length});
-    return res.json({success:true,response,intent,context:{memoryMatches:context.memories.length,knowledgeMatches:context.knowledge.length},core:data});
+    record(req.session,'INTELLIGENCE_RESPONSE','noetica_response',{
+      status:r.status,
+      intent,
+      usedMemory:context.memories.length,
+      usedKnowledge:context.knowledge.length,
+      route:'NOETICA→Krative Core'
+    });
+
+    return res.json({
+      success:true,
+      response,
+      intent,
+      context:{memoryMatches:context.memories.length,knowledgeMatches:context.knowledge.length},
+      noetica:data
+    });
   }catch(error){
     record(req.session,'INTELLIGENCE_ERROR','core_request_failed',{message:error.message,intent});
     return res.status(502).json({error:'Krative Core is unreachable right now.',intent});
