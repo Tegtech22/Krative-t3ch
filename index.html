@@ -436,9 +436,21 @@ async function loadLearnCatalog(endpoint,q,type){
     const url=endpoint+(q?"?q="+encodeURIComponent(q):"");const r=await fetch(API_BASE+url);const d=await r.json();if(!r.ok)throw new Error(d.error||"Unable to load "+type);
     const rows=Array.isArray(d)?d:(d.items||d[type]||[]);
     box.innerHTML='<div class="section-title"><div class="eyebrow">'+escapeHtml(type.toUpperCase())+'</div><h2>'+escapeHtml(type==="courses"?"Courses":type==="paths"?"Learning Paths":"Academies")+'</h2></div><div class="cards">'+(rows.length?rows.map(x=>{
-      const action=type==="courses"?'<button class="pill" onclick="openLearnCourse('+x.id+')">View course</button>':type==="academies"?'<button class="pill" onclick="selectLearnTab(\'courses\');document.getElementById(\'learnSearch\').value=\''+escapeJs(x.name||x.title)+'\';loadLearn()">Explore courses</button>':'<button class="pill" onclick="openLearnPath('+x.id+')">View path</button>';
+      const action=type==="courses"?'<button class="pill" onclick="openLearnCourse('+x.id+')">View course</button>':type==="academies"?'<button class="pill" onclick="openLearnAcademy(\''+escapeJs(x.slug||"")+\')">Explore academy</button>':'<button class="pill" onclick="openLearnPath('+x.id+')">View path</button>';
       return learnCard(x.name||x.title,x.description||x.short_description,{tag:type==="courses"?"COURSE":type==="paths"?"PATH":"ACADEMY",level:x.level,minutes:x.estimated_minutes,count:x.course_count?x.course_count+" courses":""},action);
     }).join(""):'<div class="empty">No matching learning resources found.</div>')+'</div>';
+  }catch(e){box.innerHTML='<div class="empty">'+escapeHtml(e.message)+'</div>';}
+}
+async function openLearnAcademy(slug){
+  if(!slug)return;
+  document.getElementById("learnOverviewPanel").style.display="none";document.getElementById("learnCatalogPanel").style.display="block";
+  const box=document.getElementById("learnCatalog");box.innerHTML='<div class="empty">Loading academy...</div>';
+  try{
+    const r=await fetch(API_BASE+"/api/learn/academies/"+encodeURIComponent(slug));const d=await r.json();if(!r.ok)throw new Error(d.error||"Unable to load academy");
+    const paths=d.paths||[],courses=d.courses||[];
+    box.innerHTML='<div class="section-title"><div class="eyebrow">ACADEMY</div><h2>'+escapeHtml(d.name||"Academy")+'</h2><p class="lead">'+escapeHtml(d.description||"")+'</p></div>'+
+      '<h3>Learning Paths</h3><div class="cards">'+(paths.length?paths.map(p=>learnCard(p.title,p.description,{tag:"PATH",level:p.level,count:(p.course_count||0)+" courses"},'<button class="pill" onclick="openLearnPath('+p.id+')">View path</button>')).join(""):'<div class="empty">No paths yet.</div>')+'</div>'+
+      '<h3 style="margin-top:24px">Courses</h3><div class="cards">'+(courses.length?courses.map(c=>learnCard(c.title,c.short_description||c.description,{tag:"COURSE",level:c.level,minutes:c.estimated_minutes},'<button class="pill" onclick="openLearnCourse('+c.id+')">View course</button>')).join(""):'<div class="empty">No courses yet.</div>')+'</div>';
   }catch(e){box.innerHTML='<div class="empty">'+escapeHtml(e.message)+'</div>';}
 }
 async function openLearnCourse(id){
@@ -449,12 +461,57 @@ async function openLearnCourse(id){
     const course=await cr.json(),modules=await mr.json();if(!cr.ok)throw new Error(course.error||"Unable to load course");
     title.textContent=course.title||"Course";intro.textContent=(course.short_description||course.description||"")+" "+(course.level?"Level: "+course.level+".":"");
     const skills=(course.skills||[]).map(s=>'<span class="skill-chip">'+escapeHtml(s.name||s)+'</span>').join("");
-    box.innerHTML='<div class="learn-detail"><div><div class="panel" style="padding:18px"><div class="learn-meta">'+escapeHtml(course.category||"Learning")+' · '+escapeHtml(course.level||"All levels")+(course.estimated_minutes?" · "+course.estimated_minutes+" min":"")+'</div><p class="muted">'+escapeHtml(course.description||"")+'</p><div>'+skills+'</div><div class="actions"><button class="btn primary" onclick="enrollLearnCourse('+id+')">Start / Continue course</button></div></div><h3 style="margin-top:20px">Course modules</h3>'+(Array.isArray(modules)&&modules.length?modules.map(m=>'<div class="learn-module"><h3>'+escapeHtml(m.title)+'</h3><p class="muted">'+escapeHtml(m.description||"")+'</p><ul>'+((m.lessons||[]).map(l=>'<li>'+escapeHtml(l.title)+'</li>').join("")||"<li>Activities coming soon.</li>")+'</ul></div>').join(""):'<div class="empty">Modules are being prepared.</div>')+'</div><aside class="panel" style="padding:18px"><div class="eyebrow">LEARNING MODEL</div><h3>Learn → Practice → Build → Prove → Advance</h3><p class="muted">Kranova treats projects and demonstrated ability as part of learning—not an afterthought.</p></aside></div>';
+    box.innerHTML='<div class="learn-detail"><div><div class="panel" style="padding:18px"><div class="learn-meta">'+escapeHtml(course.category||"Learning")+' · '+escapeHtml(course.level||"All levels")+(course.estimated_minutes?" · "+course.estimated_minutes+" min":"")+'</div><p class="muted">'+escapeHtml(course.description||"")+'</p><div>'+skills+'</div><div class="actions"><button class="btn primary" onclick="enrollLearnCourse('+id+')">Start / Continue course</button></div></div><h3 style="margin-top:20px">Course modules</h3>'+(Array.isArray(modules)&&modules.length?modules.map(m=>'<div class="learn-module"><h3>'+escapeHtml(m.title)+'</h3><p class="muted">'+escapeHtml(m.description||"")+'</p><ul>'+((m.lessons||[]).map(l=>'<li style="margin:8px 0"><button class="pill" onclick="openLearnLesson('+l.id+')">'+(l.completed?"✓ ":"")+escapeHtml(l.title)+'</button></li>').join("")||"<li>Lessons are being prepared.</li>")+'</ul><button class="pill" onclick="openLearnAssessmentForModule('+m.id+')">Module assessment</button></div>').join(""):'<div class="empty">Modules are being prepared.</div>')+'</div><aside class="panel" style="padding:18px"><div class="eyebrow">LEARNING MODEL</div><h3>Learn → Practice → Build → Prove → Advance</h3><p class="muted">Kranova connects lessons, practice, assessment and projects so progress reflects real learning.</p></aside></div>';
   }catch(e){box.innerHTML='<div class="empty">'+escapeHtml(e.message)+'</div>';}
 }
 async function enrollLearnCourse(id){
   if(!authToken){openAuth("login");return;}
-  try{const r=await fetch(API_BASE+"/api/courses/"+id+"/enroll",{method:"POST",headers:{Authorization:"Bearer "+authToken}});const d=await r.json();if(!r.ok)throw new Error(d.error||"Unable to enroll");alert("Course added to My Learning.");loadEnrollments();}catch(e){alert(e.message);}
+  try{const r=await fetch(API_BASE+"/api/courses/"+id+"/enroll",{method:"POST",headers:{Authorization:"Bearer "+authToken}});const d=await r.json();if(!r.ok)throw new Error(d.error||"Unable to enroll");alert("Course added to My Learning.");loadEnrollments();openLearnCourse(id);}catch(e){alert(e.message);}
+}
+async function openLearnLesson(id){
+  const modal=document.getElementById("lessonModal"),box=document.getElementById("lessonList"),title=document.getElementById("lessonTitle"),intro=document.getElementById("lessonIntro");
+  modal.style.display="grid";box.innerHTML='<div class="empty">Loading lesson...</div>';
+  try{
+    const r=await fetch(API_BASE+"/api/learn/lessons/"+id,{headers:authToken?{Authorization:"Bearer "+authToken}:{}});const d=await r.json();if(!r.ok)throw new Error(d.error||"Unable to load lesson");
+    title.textContent=d.title||"Lesson";intro.textContent=(d.course_title||"")+" · "+(d.module_title||"");
+    const activities=(d.activities||[]).map(a=>'<div class="panel" style="padding:16px;margin-top:12px"><span class="tag">'+escapeHtml(a.activity_type||"ACTIVITY")+'</span><h3>'+escapeHtml(a.title||"Practice")+'</h3><p class="muted">'+escapeHtml(a.content||"")+'</p></div>').join("");
+    box.innerHTML='<div class="panel" style="padding:18px"><div class="eyebrow">LESSON '+(Number(d.position)||"")+'</div><div style="white-space:pre-wrap;line-height:1.7">'+escapeHtml(d.content||"")+'</div>'+activities+
+      '<div class="actions" style="margin-top:18px"><button class="btn primary" '+(d.completed?"disabled":"")+' onclick="completeLearnLesson('+d.id+')">'+(d.completed?"Lesson completed":"Complete lesson")+'</button><button class="btn" onclick="loadLessonAssessment('+d.id+')">Knowledge check</button></div></div>';
+  }catch(e){box.innerHTML='<div class="empty">'+escapeHtml(e.message)+'</div>';}
+}
+async function completeLearnLesson(id){
+  if(!authToken){openAuth("login");return;}
+  try{const r=await fetch(API_BASE+"/api/lessons/"+id+"/complete",{method:"POST",headers:{Authorization:"Bearer "+authToken}});const d=await r.json();if(!r.ok)throw new Error(d.error||"Unable to complete lesson");openLearnLesson(id);}catch(e){alert(e.message);}
+}
+async function loadLessonAssessment(lessonId){
+  try{
+    const r=await fetch(API_BASE+"/api/learn/assessments?lesson_id="+lessonId);const d=await r.json();if(!r.ok)throw new Error(d.error||"Unable to load assessment");
+    if(!d.length){alert("No knowledge check has been published for this lesson yet.");return;}
+    openLearnAssessment(d[0].id);
+  }catch(e){alert(e.message);}
+}
+async function openLearnAssessmentForModule(moduleId){
+  try{
+    const r=await fetch(API_BASE+"/api/learn/assessments?module_id="+moduleId);const d=await r.json();if(!r.ok)throw new Error(d.error||"Unable to load assessment");
+    if(!d.length){alert("No module assessment has been published yet.");return;}
+    openLearnAssessment(d[0].id);
+  }catch(e){alert(e.message);}
+}
+async function openLearnAssessment(id){
+  const box=document.getElementById("lessonList"),title=document.getElementById("lessonTitle"),intro=document.getElementById("lessonIntro");
+  try{
+    const r=await fetch(API_BASE+"/api/learn/assessments/"+id,{headers:authToken?{Authorization:"Bearer "+authToken}:{}});const d=await r.json();if(!r.ok)throw new Error(d.error||"Unable to load assessment");
+    title.textContent=d.title||"Assessment";intro.textContent=(d.description||"")+" Passing score: "+d.passing_score+"%.";
+    box.innerHTML='<form id="learnAssessmentForm"><div>'+((d.questions||[]).map((q,idx)=>{
+      const options=Array.isArray(q.options)?q.options:[];
+      const controls=options.length?options.map((o,j)=>'<label style="display:block;margin:8px 0"><input type="radio" name="q_'+q.id+'" value="'+escapeHtml(String(o).replace(/"/g,"&quot;"))+'"> '+escapeHtml(String(o))+'</label>').join(""):'<input class="input" name="q_'+q.id+'" placeholder="Your answer">';
+      return '<div class="panel" style="padding:16px;margin:12px 0"><strong>'+(idx+1)+'. '+escapeHtml(q.question)+'</strong><div style="margin-top:10px">'+controls+'</div></div>';
+    }).join("")||'<div class="empty">No questions available.</div>')+'</div><button class="btn primary" type="submit">Submit assessment</button></form>';
+    document.getElementById("learnAssessmentForm").onsubmit=async e=>{
+      e.preventDefault();const answers={};(d.questions||[]).forEach(q=>{const el=document.querySelector('[name="q_'+q.id+'"]:checked')||document.querySelector('[name="q_'+q.id+'"]');answers[q.id]=el?el.value:"";});
+      try{const sr=await fetch(API_BASE+"/api/learn/assessments/"+id+"/attempts",{method:"POST",headers:{"Content-Type":"application/json",Authorization:"Bearer "+authToken},body:JSON.stringify({answers})});const result=await sr.json();if(!sr.ok)throw new Error(result.error||"Unable to submit assessment");box.innerHTML='<div class="panel" style="padding:20px"><div class="eyebrow">RESULT</div><h2>'+Number(result.score||0)+'%</h2><p>'+ (result.passed?"Assessment passed.":"Assessment not passed yet.")+'</p><p class="muted">Review the lesson and try again when another attempt is available.</p><button class="btn" onclick="openLearnAssessment('+id+')">Try again</button></div>'; }catch(err){alert(err.message);}
+    };
+  }catch(e){box.innerHTML='<div class="empty">'+escapeHtml(e.message)+'</div>';}
 }
 async function openLearnPath(id){
   try{const r=await fetch(API_BASE+"/api/learn/paths/"+id);const d=await r.json();if(!r.ok)throw new Error(d.error||"Unable to load path");const rows=d.courses||d.items||[];document.getElementById("learnOverviewPanel").style.display="none";document.getElementById("learnCatalogPanel").style.display="block";document.getElementById("learnCatalog").innerHTML='<div class="section-title"><div class="eyebrow">LEARNING PATH</div><h2>'+escapeHtml(d.title||d.name||"Path")+'</h2><p class="lead">'+escapeHtml(d.description||"")+'</p></div><div class="cards">'+(rows.length?rows.map(c=>learnCard(c.title,c.short_description||c.description,{tag:"PATH COURSE",level:c.level,minutes:c.estimated_minutes},'<button class="pill" onclick="openLearnCourse('+c.id+')">Open course</button>')).join(""):'<div class="empty">Courses are being added to this path.</div>')+'</div>';}catch(e){alert(e.message);}
