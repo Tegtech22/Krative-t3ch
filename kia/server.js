@@ -374,23 +374,64 @@ app.post('/api/admin/users/:id/reject',requireAuth,requireAdmin,async(req,res)=>
   res.json({success:true,user:publicUser(u)});
 });
 
+function classifyInput(input){
+  const text=input.toLowerCase();
+  if(/\\b(what|who|when|where|which|how|why)\\b/.test(text)) return 'question';
+  if(/\\b(plan|roadmap|strategy|steps|build|develop|implement)\\b/.test(text)) return 'planning';
+  if(/\\b(compare|versus|vs|difference|evaluate|assess)\\b/.test(text)) return 'analysis';
+  if(/\\b(decide|decision|should we|recommend|choose)\\b/.test(text)) return 'decision_support';
+  if(/\\b(create|write|draft|design|generate)\\b/.test(text)) return 'creation';
+  return 'conversation';
+}
+function retrieveContext(staffId,input){
+  const terms=input.toLowerCase().split(/\\W+/).filter(x=>x.length>3).slice(0,12);
+  const score=(text)=>terms.reduce((n,t)=>n+(text.toLowerCase().includes(t)?1:0),0);
+  const memories=memory.filter(x=>x.staffId===staffId||x.scope==='shared').map(x=>({...x,_score:score(x.content)})).filter(x=>x._score>0).sort((a,b)=>b._score-a._score).slice(0,5);
+  const knowledgeHits=knowledge.map(x=>({...x,_score:score(x.title+' '+x.content)})).filter(x=>x._score>0).sort((a,b)=>b._score-a._score).slice(0,5);
+  return {memories,knowledge:knowledgeHits};
+}
+function buildKiaResponse(data){
+  const result=data&&data.result!==undefined?data.result:data;
+  if(typeof result==='string') return result;
+  if(!result) return 'I received no usable intelligence result.';
+  const candidates=[result.response,result.answer,result.output,result.message,result.text,result.content];
+  const text=candidates.find(x=>typeof x==='string'&&x.trim());
+  if(text) return text;
+  if(result.understanding&&typeof result.understanding==='string') return result.understanding;
+  return JSON.stringify(result,null,2);
+}
+
 app.post('/api/chat',requireAuth,async(req,res)=>{
   const input=typeof(req.body&&req.body.input)==='string'?req.body.input.trim():'';
   if(!input) return res.status(400).json({error:'Input is required.'});
   if(!CORE_API_KEY) return res.status(503).json({error:'Krative Core API key is not configured on KIA.'});
-  record(req.session,'INTELLIGENCE_REQUEST','process_input',{length:input.length});
+  const intent=classifyInput(input);
+  const context=retrieveContext(req.session.staffId,input);
+  record(req.session,'INTELLIGENCE_REQUEST','understand_input',{length:input.length,intent});
+  record(req.session,'INTELLIGENCE_ROUTE','route_request',{route:'krative_core',intent,memoryMatches:context.memories.length,knowledgeMatches:context.knowledge.length});
   try{
+    const coreContext={
+      source:'KIA',staffId:req.session.staffId,intent,
+      pipeline:['UNDERSTAND','CLASSIFY','ROUTE','CONTEXT','KRATIVE_CORE','RESPONSE','UPDATE'],
+      memory:context.memories.map(x=>({content:x.content,scope:x.scope,createdAt:x.createdAt})),
+      knowledge:context.knowledge.map(x=>({title:x.title,content:x.content,createdAt:x.createdAt})),
+      instruction:'Answer the staff member directly and clearly. Use supplied memory and knowledge when relevant. Do not expose internal pipeline, credentials, hidden system details, or raw JSON unless the user asks for technical output.'
+    };
     const r=await fetch(CORE_URL+'/api/v1/intelligence',{
-      method:'POST',
-      headers:{'Content-Type':'application/json','Authorization':'Bearer '+CORE_API_KEY},
-      body:JSON.stringify({input,context:{source:'KIA',staffId:req.session.staffId}})
+      method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+CORE_API_KEY},
+      body:JSON.stringify({input,context:coreContext})
     });
-    const data=await r.json();
-    record(req.session,'INTELLIGENCE_RESPONSE','core_response',{status:r.status});
-    res.status(r.status).json(data);
+    const data=await r.json().catch(()=>({error:'Invalid Core response.'}));
+    if(!r.ok){
+      record(req.session,'INTELLIGENCE_ERROR','core_response_error',{status:r.status});
+      return res.status(502).json({error:'Krative Core returned an error.',detail:data?.error||'Core request failed.',intent});
+    }
+    const response=buildKiaResponse(data);
+    record(req.session,'INTELLIGENCE_RESPONSE','core_response',{status:r.status,intent,usedMemory:context.memories.length,usedKnowledge:context.knowledge.length});
+    return res.json({success:true,response,intent,context:{memoryMatches:context.memories.length,knowledgeMatches:context.knowledge.length},core:data});
   }catch(error){
-    record(req.session,'INTELLIGENCE_ERROR','core_request_failed',{message:error.message});
-    res.status(502).json({error:'Krative Core is unreachable.'});
+    record(req.session,'INTELLIGENCE_ERROR','core_request_failed',{message:error.message,intent});
+    return res.status(502).json({error:'Krative Core is unreachable right now.',intent});
   }
 });
 
