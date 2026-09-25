@@ -495,8 +495,30 @@ app.post("/api/intelligence", async (req,res) => {
       }catch(knowledgeError){console.warn("Kranova Knowledge Centre retrieval failed; using verified foundation knowledge:",knowledgeError.message);}
     }
     const memoryContext=structuredMemory.map(m=>({content:`${m.memory_type}/${m.key}: ${m.value}`,importance:Number(m.confidence)||0.8,source:m.source}));
-    const r=await fetch(base+"/api/v1/intelligence",{method:"POST",headers:{"Content-Type":"application/json",Authorization:"Bearer "+key},body:JSON.stringify({input,context:{source:"kranova",user_id:user.id,knowledgeSources,conversationMemory,shortTermMemory:memoryContext,structuredMemory}})});
-    const data=await r.json().catch(()=>({error:"invalid Core response"}));
+    const corePayload={input,context:{source:"kranova",user_id:user.id,knowledgeSources,conversationMemory,shortTermMemory:memoryContext,structuredMemory}};
+    let r=null;
+    let rawCoreResponse="";
+    let data=null;
+    let lastCoreError=null;
+    for(let attempt=1;attempt<=2;attempt++){
+      try{
+        r=await fetch(base+"/api/v1/intelligence",{method:"POST",headers:{"Content-Type":"application/json",Authorization:"Bearer "+key},body:JSON.stringify(corePayload)});
+        rawCoreResponse=await r.text();
+        try{data=JSON.parse(rawCoreResponse);}catch(parseError){
+          lastCoreError=new Error("Krative Core returned a non-JSON response (HTTP "+r.status+").");
+          if(attempt<2){await new Promise(resolve=>setTimeout(resolve,800));continue;}
+          console.error("Krative Core invalid response:",{status:r.status,body:rawCoreResponse.slice(0,500)});
+          return res.status(502).json({error:"unable to process intelligence request",detail:lastCoreError.message});
+        }
+        break;
+      }catch(fetchError){
+        lastCoreError=fetchError;
+        if(attempt<2){await new Promise(resolve=>setTimeout(resolve,800));continue;}
+        console.error("Krative Core fetch failed:",fetchError.message);
+        return res.status(502).json({error:"unable to reach Krative Core"});
+      }
+    }
+    if(!data)return res.status(502).json({error:"unable to process intelligence request"});
     if(!r.ok)return res.status(r.status).json(data);
     let reply="";
     const result=data.result||data;
