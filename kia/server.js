@@ -639,9 +639,11 @@ app.get(/.*/,(req,res)=>res.sendFile(path.join(__dirname,'public','index.html'))
 initDatabase()
   .then(loadUsers)
   .then(loadPersistentState)
-  .then(async()=>{
-    await runStartupE2E();
-    app.listen(PORT,'0.0.0.0',()=>console.log('KIA listening on '+PORT));
+  .then(()=>{
+    app.listen(PORT,'0.0.0.0',()=>{
+      console.log('KIA listening on '+PORT);
+      void runStartupE2E();
+    });
   })
   .catch(error=>{
     console.error('KIA database initialization failed:',error);
