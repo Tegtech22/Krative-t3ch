@@ -8,6 +8,7 @@ const ACCESS_CODE = process.env.KIA_ACCESS_CODE || '';
 const CORE_URL = (process.env.KRATIVE_CORE_BASE_URL || 'https://krative-core.onrender.com').replace(/\/$/, '');
 const CORE_API_KEY = process.env.KRATIVE_CORE_API_KEY || '';
 const NOETICA_URL = (process.env.NOETICA_BASE_URL || 'https://noetica-intelligence.onrender.com').replace(/\/$/, '');
+const NOETICA_API_KEY = process.env.NOETICA_API_KEY || '';
 const DATABASE_URL = process.env.DATABASE_URL || process.env.KRANOVA_DATABASE_URL || '';
 const E2E_TEST_TOKEN = process.env.KIA_E2E_TEST_TOKEN || '';
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '';
@@ -231,6 +232,7 @@ app.get('/health',(req,res)=>res.json({
   coreConfigured:Boolean(CORE_API_KEY),
   coreBaseUrl:CORE_URL,
   noeticaConfigured:Boolean(NOETICA_URL),
+  noeticaKeyConfigured:Boolean(NOETICA_API_KEY),
   noeticaBaseUrl:NOETICA_URL,
   signupEnabled:true
 }));
@@ -534,7 +536,7 @@ async function runKiaIntelligence(input, session){
 
   const r=await fetch(NOETICA_URL+'/api/v1/intelligence',{
     method:'POST',
-    headers:{'Content-Type':'application/json'},
+    headers:{'Content-Type':'application/json',Authorization:'Bearer '+NOETICA_API_KEY},
     body:JSON.stringify({input,context:{...coreContext,memoryKey:session.staffId}})
   });
   const data=await r.json().catch(()=>({error:'Invalid NOETICA response.'}));
