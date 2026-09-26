@@ -494,8 +494,7 @@ app.post("/api/intelligence", async (req,res) => {
         }
       }catch(knowledgeError){console.warn("Kranova Knowledge Centre retrieval failed; using verified foundation knowledge:",knowledgeError.message);}
     }
-    const memoryContext=structuredMemory.map(m=>({content:`${m.memory_type}/${m.key}: ${m.value}`,importance:Number(m.confidence)||0.8,source:m.source}));
-    const corePayload={input,context:{source:"kranova",user_id:user.id,knowledgeSources,conversationMemory,shortTermMemory:memoryContext,structuredMemory}};
+    // Keep Core requests bounded so intelligence context never exceeds the Core request-body limit.\n    const compactText=(value,max=1200)=>String(value??"").slice(0,max);\n    const compactKnowledge=knowledgeSources.slice(0,5).map(k=>({\n      id:k.id,type:k.type,title:compactText(k.title,200),content:compactText(k.content,1800),answer:compactText(k.answer,1800),confidence:k.confidence,relevance:k.relevance\n    }));\n    const compactConversation=conversationMemory.slice(-8).map(m=>({role:m.role,content:compactText(m.content,1600)}));\n    const compactStructuredMemory=structuredMemory.slice(0,30).map(m=>({\n      memory_type:m.memory_type,key:compactText(m.key,200),value:compactText(m.value,800),source:compactText(m.source,200),confidence:Number(m.confidence)||0.8\n    }));\n    const memoryContext=compactStructuredMemory.map(m=>({content:`${m.memory_type}/${m.key}: ${m.value}`,importance:Number(m.confidence)||0.8,source:m.source}));\n    const corePayload={input:compactText(input,8000),context:{source:"kranova",product:"Kranova",user_id:user.id,knowledgeSources:compactKnowledge,conversationMemory:compactConversation,shortTermMemory:memoryContext,structuredMemory:compactStructuredMemory}};
     let r=null;
     let rawCoreResponse="";
     let data=null;
