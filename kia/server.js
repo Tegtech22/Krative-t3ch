@@ -486,7 +486,7 @@ function classifyInput(input){
 function retrieveContext(staffId,input){
   const normalized=String(input||'').toLowerCase().trim();
   const explicitMemoryRecall=/\b(what did i ask you to remember|what do you remember|what have you remembered|show me what you remember|recall what i asked you to remember)\b/.test(normalized);
-  const terms=normalized.split(/\\W+/).filter(x=>x.length>3).slice(0,12);
+  const terms=normalized.split(/\W+/).filter(x=>x.length>3).slice(0,12);
   const score=(text)=>terms.reduce((n,t)=>n+(text.toLowerCase().includes(t)?1:0),0);
   const staffMemories=memory.filter(x=>x.staffId===staffId||x.scope==='shared');
   const memories=explicitMemoryRecall
