@@ -672,7 +672,7 @@ app.get("/api/learn/courses/:id", async (req,res) => {
       pool.query("SELECT id,title,description,difficulty,estimated_hours,status FROM learning_projects WHERE course_id=$1 AND status='active' ORDER BY created_at",[id])
     ]);
     const user=await getAuthUser(req);let enrollment=null;
-    if(user){const e=await pool.query("SELECT id,enrolled_at,progress,completed_at FROM enrollments WHERE user_id=$1 AND course_id=$2",[user.id,id]);enrollment=e.rows[0]||null;}
+    if(user){const e=await pool.query("SELECT e.id,e.enrolled_at,e.completed_at,COALESCE((SELECT ROUND(COUNT(lp.lesson_id)::numeric*100/NULLIF(COUNT(l.id),0))::int FROM lessons l LEFT JOIN lesson_progress lp ON lp.lesson_id=l.id AND lp.user_id=$1 WHERE l.course_id=$2),0) AS progress FROM enrollments e WHERE e.user_id=$1 AND e.course_id=$2",[user.id,id]);enrollment=e.rows[0]||null;}
     res.json({...c.rows[0],modules:modules.rows,skills:skills.rows,projects:projects.rows,enrollment});
   }catch(e){console.error("Learn course detail failed:",e);res.status(500).json({error:"unable to load course"});}
 });
@@ -843,7 +843,7 @@ app.get("/api/learn/my-learning", async (req,res) => {
   if(!pool)return res.json({in_progress:[],completed:[],saved:[],certificates:[],badges:[],skills:[]});
   try{
     const [enrolled,saved,certificates,badges,skills]=await Promise.all([
-      pool.query("SELECT c.id,c.slug,c.title,c.short_description,c.level,c.estimated_minutes,e.enrolled_at,e.progress,e.completed_at FROM enrollments e JOIN courses c ON c.id=e.course_id WHERE e.user_id=$1 ORDER BY e.enrolled_at DESC",[user.id]),
+      pool.query("SELECT c.id,c.slug,c.title,c.short_description,c.level,c.estimated_minutes,e.enrolled_at,e.completed_at,COALESCE((SELECT ROUND(COUNT(lp.lesson_id)::numeric*100/NULLIF(COUNT(l.id),0))::int FROM lessons l LEFT JOIN lesson_progress lp ON lp.lesson_id=l.id AND lp.user_id=$1 WHERE l.course_id=c.id),0) AS progress FROM enrollments e JOIN courses c ON c.id=e.course_id WHERE e.user_id=$1 ORDER BY e.enrolled_at DESC",[user.id]),
       pool.query("SELECT resource_type,resource_id,created_at FROM saved_learning WHERE user_id=$1 ORDER BY created_at DESC",[user.id]),
       pool.query("SELECT id,certificate_number,title,course_id,issued_at,expires_at,verification_code,status FROM certificates WHERE user_id=$1 ORDER BY issued_at DESC",[user.id]),
       pool.query("SELECT b.id,b.slug,b.name,b.description,b.category,ub.awarded_at FROM user_badges ub JOIN badges b ON b.id=ub.badge_id WHERE ub.user_id=$1 ORDER BY ub.awarded_at DESC",[user.id]),
@@ -982,10 +982,10 @@ app.get("/api/learn/overview", async (req,res) => {
   if(!pool)return res.json({continue_learning:[],recommended:[],progress:{},next_step:null});
   try{
     const [continueLearning,recommended,progress,nextStep,academies,projects]=await Promise.all([
-      pool.query("SELECT c.id,c.slug,c.title,c.short_description,c.level,c.estimated_minutes,e.progress,e.enrolled_at FROM enrollments e JOIN courses c ON c.id=e.course_id WHERE e.user_id=$1 AND e.progress<100 ORDER BY e.enrolled_at DESC LIMIT 6",[user?.id]),
+      pool.query("SELECT c.id,c.slug,c.title,c.short_description,c.level,c.estimated_minutes,e.enrolled_at,COALESCE((SELECT ROUND(COUNT(lp.lesson_id)::numeric*100/NULLIF(COUNT(l.id),0))::int FROM lessons l LEFT JOIN lesson_progress lp ON lp.lesson_id=l.id AND lp.user_id=$1 WHERE l.course_id=c.id),0) AS progress FROM enrollments e JOIN courses c ON c.id=e.course_id WHERE e.user_id=$1 AND COALESCE((SELECT ROUND(COUNT(lp.lesson_id)::numeric*100/NULLIF(COUNT(l.id),0))::int FROM lessons l LEFT JOIN lesson_progress lp ON lp.lesson_id=l.id AND lp.user_id=$1 WHERE l.course_id=c.id),0)<100 ORDER BY e.enrolled_at DESC LIMIT 6",[user?.id]),
       pool.query("SELECT c.id,c.slug,c.title,c.short_description,c.level,c.estimated_minutes,c.category FROM courses c WHERE c.status='active' AND NOT EXISTS(SELECT 1 FROM enrollments e WHERE e.user_id=$1 AND e.course_id=c.id) ORDER BY c.created_at DESC,c.id DESC LIMIT 6",[user?.id]),
       pool.query("SELECT COUNT(*)::int AS enrolled,COUNT(*) FILTER(WHERE progress>0 AND progress<100)::int AS in_progress,COUNT(*) FILTER(WHERE progress=100)::int AS completed,COALESCE(ROUND(AVG(progress))::int,0) AS average_progress FROM enrollments WHERE user_id=$1",[user?.id]),
-      pool.query("SELECT c.id,c.slug,c.title,e.progress FROM enrollments e JOIN courses c ON c.id=e.course_id WHERE e.user_id=$1 AND e.progress<100 ORDER BY e.enrolled_at DESC LIMIT 1",[user?.id]),
+      pool.query("SELECT c.id,c.slug,c.title,COALESCE((SELECT ROUND(COUNT(lp.lesson_id)::numeric*100/NULLIF(COUNT(l.id),0))::int FROM lessons l LEFT JOIN lesson_progress lp ON lp.lesson_id=l.id AND lp.user_id=$1 WHERE l.course_id=c.id),0) AS progress FROM enrollments e JOIN courses c ON c.id=e.course_id WHERE e.user_id=$1 AND COALESCE((SELECT ROUND(COUNT(lp.lesson_id)::numeric*100/NULLIF(COUNT(l.id),0))::int FROM lessons l LEFT JOIN lesson_progress lp ON lp.lesson_id=l.id AND lp.user_id=$1 WHERE l.course_id=c.id),0)<100 ORDER BY e.enrolled_at DESC LIMIT 1",[user?.id]),
       pool.query("SELECT a.id,a.slug,a.name,a.description,a.icon,a.category,COUNT(DISTINCT c.id)::int AS course_count FROM learning_academies a LEFT JOIN courses c ON c.academy_id=a.id AND c.status='active' WHERE a.status='active' GROUP BY a.id ORDER BY a.name LIMIT 6"),
       pool.query("SELECT id,title,description,difficulty,estimated_hours,course_id,academy_id FROM learning_projects WHERE status='active' ORDER BY created_at DESC,id DESC LIMIT 6")
     ]);
