@@ -517,6 +517,22 @@ function buildKiaResponse(data){
   return JSON.stringify(result,null,2);
 }
 
+async function runStartupE2E(){
+  if(process.env.KIA_STARTUP_E2E_TEST!=='true') return;
+  const session={staffId:'startup-e2e-test',role:'test',createdAt:new Date().toISOString()};
+  const input='Startup integration test: explain in one sentence what Krative Core does.';
+  console.log('KIA startup E2E test: begin');
+  try{
+    const result=await runKiaIntelligence(input,session);
+    const coreResult=result.noetica?.result;
+    const passed=Boolean(result.success&&result.response&&coreResult?.status==='completed');
+    console.log('KIA startup E2E test:',JSON.stringify({passed,status:coreResult?.status,stage:coreResult?.stage,hasResponse:Boolean(result.response)}));
+    if(!passed) console.error('KIA startup E2E test: FAILED');
+  }catch(error){
+    console.error('KIA startup E2E test: FAILED',error?.message||String(error));
+  }
+}
+
 async function runKiaIntelligence(input, session){
   if(!input) throw Object.assign(new Error('Input is required.'),{statusCode:400});
   if(!CORE_API_KEY) throw Object.assign(new Error('Krative Core API key is not configured on KIA.'),{statusCode:503});
@@ -623,7 +639,8 @@ app.get(/.*/,(req,res)=>res.sendFile(path.join(__dirname,'public','index.html'))
 initDatabase()
   .then(loadUsers)
   .then(loadPersistentState)
-  .then(()=>{
+  .then(async()=>{
+    await runStartupE2E();
     app.listen(PORT,'0.0.0.0',()=>console.log('KIA listening on '+PORT));
   })
   .catch(error=>{
