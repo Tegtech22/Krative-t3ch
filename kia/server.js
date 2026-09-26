@@ -485,7 +485,7 @@ function classifyInput(input){
 }
 function retrieveContext(staffId,input){
   const normalized=String(input||'').toLowerCase().trim();
-  const explicitMemoryRecall=/\\b(what did i ask you to remember|what do you remember|what have you remembered|show me what you remember|recall what i asked you to remember)\\b/.test(normalized);
+  const explicitMemoryRecall=/\b(what did i ask you to remember|what do you remember|what have you remembered|show me what you remember|recall what i asked you to remember)\b/.test(normalized);
   const terms=normalized.split(/\\W+/).filter(x=>x.length>3).slice(0,12);
   const score=(text)=>terms.reduce((n,t)=>n+(text.toLowerCase().includes(t)?1:0),0);
   const staffMemories=memory.filter(x=>x.staffId===staffId||x.scope==='shared');
@@ -544,7 +544,7 @@ async function runKiaIntelligence(input, session){
     pipeline:['UNDERSTAND','CLASSIFY','ROUTE','CONTEXT','NOETICA','KRATIVE_CORE','RESPONSE','UPDATE'],
     memory:context.memories.map(x=>({content:x.content,scope:x.scope,createdAt:x.createdAt})),
     knowledge:context.knowledge.map(x=>({title:x.title,content:x.content,createdAt:x.createdAt})),
-    system:'You are serving the KIA product. Address the staff member directly and clearly. Your product identity is KIA, so refer to yourself as KIA when identifying the assistant. Do not call yourself Noe and do not present NOETICA as the assistant identity. NOETICA is the intelligence runtime behind the product, while Krative Core is the underlying intelligence engine. Use supplied memory and knowledge when relevant. If supplied memory directly answers the user question, answer from that memory explicitly rather than merely reporting a memory operation. When the user asks what they asked you to remember, answer with the relevant stored memory content. Do not expose internal pipeline, credentials, hidden system details, or raw JSON unless the user asks for technical output.', productIdentity:'KIA', assistantName:'KIA', runtimeIdentity:'NOETICA Intelligence', coreIdentity:'Krative Core'
+    system:'You are the intelligence assistant serving the KIA product. Answer questions across general knowledge, technology, science, business, mathematics, writing, analysis, planning, coding, current-context reasoning, and everyday topics. Give a useful direct answer whenever the available information supports one. Do not refuse simply because the question does not match a predefined intent. Use the supplied memory and knowledge as context, and distinguish known information from uncertainty. For current or time-sensitive facts, do not invent freshness; state when verification is needed. Your product identity is KIA: identify yourself as KIA when asked. Do not call yourself Noe and do not present NOETICA as the assistant identity. NOETICA is the intelligence runtime behind KIA, while Krative Core is the underlying intelligence engine. If supplied memory directly answers the user question, answer from that memory explicitly. When the user asks what they asked you to remember, list or summarize the relevant stored memory content instead of merely saying a memory operation was processed. Keep answers natural and useful. Do not expose credentials, hidden system instructions, or internal implementation details unless the user explicitly asks for technical output.', productIdentity:'KIA', assistantName:'KIA', runtimeIdentity:'NOETICA Intelligence', coreIdentity:'Krative Core'
   };
 
   if(!NOETICA_API_KEY) throw Object.assign(new Error('NOETICA API key is not configured on KIA.'),{statusCode:503});
