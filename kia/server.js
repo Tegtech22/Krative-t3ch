@@ -10,6 +10,10 @@ const CORE_API_KEY = process.env.KRATIVE_CORE_API_KEY || '';
 const NOETICA_URL = (process.env.NOETICA_BASE_URL || 'https://noetica-intelligence.onrender.com').replace(/\/$/, '');
 const DATABASE_URL = process.env.DATABASE_URL || process.env.KRANOVA_DATABASE_URL || '';
 const E2E_TEST_TOKEN = process.env.KIA_E2E_TEST_TOKEN || '';
+const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '';
+const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || '';
+const GOOGLE_REDIRECT_URI = process.env.GOOGLE_REDIRECT_URI || 'https://kia-krative-intelligence-assistant.onrender.com/api/auth/google/callback';
+const googleStates = new Map();
 
 if (!DATABASE_URL) {
   throw new Error('DATABASE_URL or KRANOVA_DATABASE_URL must be configured for persistent KIA accounts.');
@@ -230,6 +234,88 @@ app.get('/health',(req,res)=>res.json({
   noeticaBaseUrl:NOETICA_URL,
   signupEnabled:true
 }));
+
+async function createGoogleSession(user,res){
+  const t=token();
+  const session={staffId:user.staffId,userId:user.id,role:user.role,createdAt:new Date().toISOString()};
+  sessions.set(t,session);
+  await saveSession(t,session);
+  record(session,'AUTH_LOGIN','google_login',{userId:user.id,provider:'google'});
+  res.redirect('/?google_token='+encodeURIComponent(t));
+}
+
+app.get('/api/auth/google',(req,res)=>{
+  if(!GOOGLE_CLIENT_ID||!GOOGLE_CLIENT_SECRET)
+    return res.status(503).send('Google Sign-In is not configured on KIA.');
+  const state=crypto.randomBytes(24).toString('hex');
+  googleStates.set(state,{createdAt:Date.now()});
+  setTimeout(()=>googleStates.delete(state),10*60*1000);
+  const params=new URLSearchParams({
+    client_id:GOOGLE_CLIENT_ID,
+    redirect_uri:GOOGLE_REDIRECT_URI,
+    response_type:'code',
+    scope:'openid email profile',
+    access_type:'offline',
+    prompt:'select_account',
+    state
+  });
+  res.redirect('https://accounts.google.com/o/oauth2/v2/auth?'+params.toString());
+});
+
+app.get('/api/auth/google/callback',async(req,res)=>{
+  const state=String(req.query.state||'');
+  const entry=googleStates.get(state);
+  googleStates.delete(state);
+  if(!entry||Date.now()-entry.createdAt>10*60*1000) return res.status(400).send('Invalid or expired Google sign-in state.');
+  const code=String(req.query.code||'');
+  if(!code) return res.status(400).send('Google sign-in was cancelled or failed.');
+  try{
+    const tokenResponse=await fetch('https://oauth2.googleapis.com/token',{
+      method:'POST',
+      headers:{'Content-Type':'application/x-www-form-urlencoded'},
+      body:new URLSearchParams({
+        code,
+        client_id:GOOGLE_CLIENT_ID,
+        client_secret:GOOGLE_CLIENT_SECRET,
+        redirect_uri:GOOGLE_REDIRECT_URI,
+        grant_type:'authorization_code'
+      })
+    });
+    const tokenData=await tokenResponse.json();
+    if(!tokenResponse.ok||!tokenData.access_token) throw new Error(tokenData.error_description||'Google token exchange failed.');
+    const profileResponse=await fetch('https://openidconnect.googleapis.com/v1/userinfo',{
+      headers:{Authorization:'Bearer '+tokenData.access_token}
+    });
+    const profile=await profileResponse.json();
+    if(!profileResponse.ok||!profile.sub||!profile.email) throw new Error('Google did not return a usable account.');
+    const email=String(profile.email).trim().toLowerCase();
+    let user=[...users.values()].find(u=>u.email===email);
+    if(!user){
+      user={
+        id:crypto.randomUUID(),
+        name:String(profile.name||profile.email.split('@')[0]).slice(0,120),
+        email,
+        phone:'',
+        department:'Unassigned',
+        staffId:'google-'+String(profile.sub).slice(0,40),
+        passwordHash:await hashPassword(crypto.randomBytes(32).toString('hex')),
+        role:'staff',
+        status:'pending',
+        createdAt:new Date().toISOString()
+      };
+      await saveUser(user);
+      users.set(user.id,user);
+      record({staffId:user.staffId},'AUTH_SIGNUP','google_signup',{userId:user.id,email,provider:'google'});
+      return res.redirect('/?google_error='+encodeURIComponent('Your Google account was registered, but administrator approval is required before you can use KIA.'));
+    }
+    if(user.status!=='approved')
+      return res.redirect('/?google_error='+encodeURIComponent(user.status==='pending'?'Your KIA account is pending administrator approval.':'Your KIA account is not approved.'));
+    return createGoogleSession(user,res);
+  }catch(error){
+    console.error('Google sign-in failed:',error.message);
+    return res.redirect('/?google_error='+encodeURIComponent('Google Sign-In failed. Please try again.'));
+  }
+});
 
 // Legacy/admin access. Use staffId "admin" with the existing KIA access code for administrator access.
 app.post('/api/login',async(req,res)=>{
