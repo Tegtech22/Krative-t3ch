@@ -466,6 +466,14 @@ app.post('/api/admin/users/:id/reject',requireAuth,requireAdmin,async(req,res)=>
   res.json({success:true,user:publicUser(u)});
 });
 
+function extractMemoryRequest(input){
+  const text=String(input||'').trim();
+  const match=text.match(/^remember(?:\s+that)?\s+(.+)$/i);
+  if(!match) return null;
+  const content=match[1].trim().replace(/[.!?]+$/,'').trim();
+  return content.length>=3?content:null;
+}
+
 function classifyInput(input){
   const text=input.toLowerCase();
   if(/\b(what|who|when|where|which|how|why)\b/.test(text)) return 'question';
@@ -531,7 +539,7 @@ async function runKiaIntelligence(input, session){
     pipeline:['UNDERSTAND','CLASSIFY','ROUTE','CONTEXT','NOETICA','KRATIVE_CORE','RESPONSE','UPDATE'],
     memory:context.memories.map(x=>({content:x.content,scope:x.scope,createdAt:x.createdAt})),
     knowledge:context.knowledge.map(x=>({title:x.title,content:x.content,createdAt:x.createdAt})),
-    system:'You are serving the KIA product. Address the staff member directly and clearly. Your product identity is KIA, so refer to yourself as KIA when identifying the assistant. Do not call yourself Noe and do not present NOETICA as the assistant identity. NOETICA is the intelligence runtime behind the product, while Krative Core is the underlying intelligence engine. Use supplied memory and knowledge when relevant. Do not expose internal pipeline, credentials, hidden system details, or raw JSON unless the user asks for technical output.', productIdentity:'KIA', assistantName:'KIA', runtimeIdentity:'NOETICA Intelligence', coreIdentity:'Krative Core'
+    system:'You are serving the KIA product. Address the staff member directly and clearly. Your product identity is KIA, so refer to yourself as KIA when identifying the assistant. Do not call yourself Noe and do not present NOETICA as the assistant identity. NOETICA is the intelligence runtime behind the product, while Krative Core is the underlying intelligence engine. Use supplied memory and knowledge when relevant. If supplied memory directly answers the user's question, answer from that memory explicitly rather than merely reporting a memory operation. When the user asks what they asked you to remember, answer with the relevant stored memory content. Do not expose internal pipeline, credentials, hidden system details, or raw JSON unless the user asks for technical output.', productIdentity:'KIA', assistantName:'KIA', runtimeIdentity:'NOETICA Intelligence', coreIdentity:'Krative Core'
   };
 
   if(!NOETICA_API_KEY) throw Object.assign(new Error('NOETICA API key is not configured on KIA.'),{statusCode:503});
@@ -574,6 +582,15 @@ async function runKiaIntelligence(input, session){
 app.post('/api/chat',requireAuth,async(req,res)=>{
   const input=typeof(req.body&&req.body.input)==='string'?req.body.input.trim():'';
   try{
+    const memoryContent=extractMemoryRequest(input);
+    if(memoryContent){
+      const item={id:crypto.randomUUID(),staffId:req.session.staffId,scope:'private',content:memoryContent,createdAt:new Date().toISOString()};
+      await saveMemory(item);
+      memory.unshift(item);
+      record(req.session,'MEMORY_WRITE','store_memory',{memoryId:item.id,scope:item.scope,source:'natural_language'});
+      const result=await runKiaIntelligence(input,req.session);
+      return res.json({...result,memoryStored:true,storedMemory:memoryContent});
+    }
     const result=await runKiaIntelligence(input,req.session);
     return res.json(result);
   }catch(error){
