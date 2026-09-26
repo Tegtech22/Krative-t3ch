@@ -484,9 +484,14 @@ function classifyInput(input){
   return 'conversation';
 }
 function retrieveContext(staffId,input){
-  const terms=input.toLowerCase().split(/\W+/).filter(x=>x.length>3).slice(0,12);
+  const normalized=String(input||'').toLowerCase().trim();
+  const explicitMemoryRecall=/\\b(what did i ask you to remember|what do you remember|what have you remembered|show me what you remember|recall what i asked you to remember)\\b/.test(normalized);
+  const terms=normalized.split(/\\W+/).filter(x=>x.length>3).slice(0,12);
   const score=(text)=>terms.reduce((n,t)=>n+(text.toLowerCase().includes(t)?1:0),0);
-  const memories=memory.filter(x=>x.staffId===staffId||x.scope==='shared').map(x=>({...x,_score:score(x.content)})).filter(x=>x._score>0).sort((a,b)=>b._score-a._score).slice(0,5);
+  const staffMemories=memory.filter(x=>x.staffId===staffId||x.scope==='shared');
+  const memories=explicitMemoryRecall
+    ? staffMemories.slice(0,5).map(x=>({...x,_score:1}))
+    : staffMemories.map(x=>({...x,_score:score(x.content)})).filter(x=>x._score>0).sort((a,b)=>b._score-a._score).slice(0,5);
   const knowledgeHits=knowledge.map(x=>({...x,_score:score(x.title+' '+x.content)})).filter(x=>x._score>0).sort((a,b)=>b._score-a._score).slice(0,5);
   return {memories,knowledge:knowledgeHits};
 }
