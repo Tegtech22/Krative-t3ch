@@ -213,19 +213,12 @@ async function loadPersistentState(){
     knowledge.push(seed);
   }
   const defaultPlugins=[
-    ['intelligence','KIA Intelligence','Route requests through NOETICA Intelligence and Krative Core.','intelligence'],
-    ['memory','KIA Memory','Store and retrieve staff-scoped KIA memory.','productivity'],
-    ['knowledge','KIA Knowledge','Read and write the persistent KIA knowledge store.','knowledge'],
-    ['audit','KIA Audit','Record and inspect protected KIA activity.','security']
+    ['intelligence','KIA Intelligence','Route requests through NOETICA Intelligence and Krative Core.','intelligence'],['memory','KIA Memory','Store and retrieve staff-scoped KIA memory.','productivity'],['knowledge','KIA Knowledge','Read and write the persistent KIA knowledge store.','knowledge'],['audit','KIA Audit','Record and inspect protected KIA activity.','security'],['openai','OpenAI / ChatGPT','Use OpenAI models through the configured OpenAI API connection.','ai'],['claude','Claude','Use Anthropic Claude models through the configured Anthropic API connection.','ai'],['github','GitHub','Read and manage authorized GitHub repositories, issues and pull requests.','development'],['supabase','Supabase','Access authorized Supabase projects and database APIs.','backend'],['gmail','Gmail','Connect approved staff Gmail accounts through Google OAuth.','productivity'],['google-calendar','Google Calendar','Connect approved staff calendars through Google OAuth.','productivity'],['google-drive','Google Drive','Connect approved staff Drive files through Google OAuth.','productivity'],['gemini','Gemini','Use Google Gemini models through the configured Google AI API connection.','ai'],['slack','Slack','Connect authorized Slack workspaces for staff collaboration.','collaboration'],['render','Render','Inspect and operate authorized Render services through the configured Render API connection.','infrastructure']
   ];
   for(const [id,name,description,category] of defaultPlugins){
     await pool.query('INSERT INTO kia_plugins (id,name,description,category,enabled) VALUES ($1,$2,$3,$4,TRUE) ON CONFLICT (id) DO NOTHING',[id,name,description,category]);
   }
-  const defaultConnectors=[
-    ['core','Krative Core','Live intelligence engine connection used by KIA.'],
-    ['noetica','NOETICA Intelligence','Live intelligence runtime connection used by KIA.'],
-    ['google','Google Account','Google OAuth connector for approved staff sign-in.']
-  ];
+  const defaultConnectors=[['core','Krative Core','Live intelligence engine connection used by KIA.'],['noetica','NOETICA Intelligence','Live intelligence runtime connection used by KIA.'],['google','Google Account','Google OAuth connector for approved staff sign-in.'],['github','GitHub','Authorized GitHub account or GitHub App connection.'],['supabase','Supabase','Authorized Supabase project connection.'],['openai','OpenAI / ChatGPT','OpenAI API connection used by KIA plugins and intelligence agents.'],['claude','Claude','Anthropic API connection used by KIA plugins and intelligence agents.'],['gemini','Gemini','Google AI API connection used by KIA plugins and intelligence agents.'],['slack','Slack','Authorized Slack workspace connection.'],['render','Render','Authorized Render API connection.']];
   for(const [id,name,description] of defaultConnectors){
     await pool.query('INSERT INTO kia_connectors (id,name,description,enabled) VALUES ($1,$2,$3,TRUE) ON CONFLICT (id) DO NOTHING',[id,name,description]);
   }
@@ -714,7 +707,8 @@ app.post('/api/knowledge',requireAuth,async(req,res)=>{
 });
 app.get('/api/plugins',requireAuth,async(req,res)=>{
   const {rows}=await pool.query('SELECT id,name,description,category,enabled FROM kia_plugins ORDER BY name');
-  res.json({items:rows.map(x=>({...x,status:x.enabled?'active':'disabled',actions:x.enabled&&['intelligence'].includes(x.id)?['run']:[]}))});
+  const configured={intelligence:Boolean(NOETICA_API_KEY&&CORE_API_KEY),memory:true,knowledge:true,audit:true,openai:Boolean(process.env.OPENAI_API_KEY),claude:Boolean(process.env.ANTHROPIC_API_KEY),github:Boolean(process.env.GITHUB_TOKEN),supabase:Boolean(process.env.SUPABASE_URL&&process.env.SUPABASE_SERVICE_ROLE_KEY),gmail:Boolean(GOOGLE_CLIENT_ID&&GOOGLE_CLIENT_SECRET),'google-calendar':Boolean(GOOGLE_CLIENT_ID&&GOOGLE_CLIENT_SECRET),'google-drive':Boolean(GOOGLE_CLIENT_ID&&GOOGLE_CLIENT_SECRET),gemini:Boolean(process.env.GEMINI_API_KEY),slack:Boolean(process.env.SLACK_BOT_TOKEN),render:Boolean(process.env.RENDER_API_KEY)};
+  res.json({items:rows.map(x=>{const ready=Boolean(configured[x.id]);return {...x,status:!x.enabled?'disabled':ready?'active':'not_configured',configured:ready,actions:x.enabled&&ready?['run']:[]};})});
 });
 app.put('/api/plugins/:id',requireAuth,requireAdmin,async(req,res)=>{
   const enabled=Boolean(req.body?.enabled);
@@ -737,6 +731,25 @@ app.post('/api/plugins/:id/run',requireAuth,async(req,res)=>{
   if(plugin.id==='memory') return res.json({success:true,plugin:plugin.id,output:'Memory plugin is active. Use the Memory section or /api/memory to store and retrieve staff-scoped memory.'});
   if(plugin.id==='knowledge') return res.json({success:true,plugin:plugin.id,output:'Knowledge plugin is active. Use the Knowledge Centre or /api/knowledge to manage persistent knowledge.'});
   if(plugin.id==='audit') return res.json({success:true,plugin:plugin.id,output:'Audit plugin is active. Protected KIA actions are being recorded in the audit system.'});
+  const input=typeof req.body?.input==='string'&&req.body.input.trim()?req.body.input.trim():'KIA plugin connectivity test.';
+  if(plugin.id==='openai'){
+    const r=await fetch('https://api.openai.com/v1/responses',{method:'POST',headers:{Authorization:'Bearer '+process.env.OPENAI_API_KEY,'Content-Type':'application/json'},body:JSON.stringify({model:process.env.KIA_OPENAI_PLUGIN_MODEL||'gpt-5.6-luna',input})}); const d=await r.json().catch(()=>({})); if(!r.ok)return res.status(502).json({error:d.error?.message||'OpenAI plugin request failed.'}); return res.json({success:true,plugin:plugin.id,output:d.output_text||'OpenAI returned no text.'});
+  }
+  if(plugin.id==='claude'){
+    const r=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:{'x-api-key':process.env.ANTHROPIC_API_KEY,'anthropic-version':'2023-06-01','Content-Type':'application/json'},body:JSON.stringify({model:process.env.KIA_CLAUDE_PLUGIN_MODEL||'claude-sonnet-5',max_tokens:512,messages:[{role:'user',content:input}]})}); const d=await r.json().catch(()=>({})); if(!r.ok)return res.status(502).json({error:d.error?.message||'Claude plugin request failed.'}); return res.json({success:true,plugin:plugin.id,output:(d.content||[]).filter(x=>x.type==='text').map(x=>x.text).join('')||'Claude returned no text.'});
+  }
+  if(plugin.id==='github'){
+    const r=await fetch('https://api.github.com/user',{headers:{Authorization:'Bearer '+process.env.GITHUB_TOKEN,Accept:'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','User-Agent':'KIA-Krative-T3ch'}}); const d=await r.json().catch(()=>({})); if(!r.ok)return res.status(502).json({error:d.message||'GitHub plugin request failed.'}); return res.json({success:true,plugin:plugin.id,output:'GitHub connected as '+(d.login||'authorized user')+'.'});
+  }
+  if(plugin.id==='supabase'){
+    const base=(process.env.SUPABASE_URL||'').replace(/\/$/,''); const r=await fetch(base+'/rest/v1/',{headers:{apikey:process.env.SUPABASE_SERVICE_ROLE_KEY,Authorization:'Bearer '+process.env.SUPABASE_SERVICE_ROLE_KEY}}); if(!r.ok)return res.status(502).json({error:'Supabase plugin request failed with HTTP '+r.status+'.'}); return res.json({success:true,plugin:plugin.id,output:'Supabase connection is active and the REST API is reachable.'});
+  }
+  if(plugin.id==='gemini'){
+    const r=await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key='+encodeURIComponent(process.env.GEMINI_API_KEY),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({contents:[{parts:[{text:input}]}]})}); const d=await r.json().catch(()=>({})); if(!r.ok)return res.status(502).json({error:d.error?.message||'Gemini plugin request failed.'}); return res.json({success:true,plugin:plugin.id,output:d.candidates?.[0]?.content?.parts?.map(x=>x.text||'').join('')||'Gemini returned no text.'});
+  }
+  if(['gmail','google-calendar','google-drive'].includes(plugin.id))return res.status(409).json({error:'Connect Google in the Connectors section before running this Google service plugin.'});
+  if(plugin.id==='slack')return res.status(409).json({error:'Slack plugin requires an authorized workspace token.'});
+  if(plugin.id==='render')return res.status(409).json({error:'Render plugin requires an authorized Render API key.'});
   return res.status(400).json({error:'Plugin action is not implemented.'});
 });
 app.get('/api/connectors',requireAuth,async(req,res)=>{
@@ -748,11 +761,14 @@ app.get('/api/connectors',requireAuth,async(req,res)=>{
       try{const r=await fetch(CORE_URL+'/health');status=x.enabled&&r.ok?'connected':'unreachable';detail=r.ok?'Core health check passed.':'Core health check failed.';}catch(e){status='unreachable';detail='Core health check failed.';}
     }else if(x.id==='noetica'){
       try{const r=await fetch(NOETICA_URL+'/health');status=x.enabled&&r.ok?'connected':'unreachable';detail=r.ok?'NOETICA health check passed.':'NOETICA health check failed.';}catch(e){status='unreachable';detail='NOETICA health check failed.';}
-    }else if(x.id==='google'){
-      status=GOOGLE_CLIENT_ID&&GOOGLE_CLIENT_SECRET?'ready':'not_configured';
-      detail=status==='ready'?'Google OAuth is configured; staff authorization is required to connect.':'Google OAuth credentials are not configured.';
-      action=status==='ready'?true:false;actionLabel='Connect Google';
-    }
+    }else if(x.id==='google'){status=GOOGLE_CLIENT_ID&&GOOGLE_CLIENT_SECRET?'ready':'not_configured';detail=status==='ready'?'Google OAuth is configured; staff authorization is required to connect.':'Google OAuth credentials are not configured.';action=status==='ready';actionLabel='Connect Google';
+    }else if(x.id==='github'){status=process.env.GITHUB_TOKEN?'connected':'not_configured';detail=status==='connected'?'GitHub token is configured.':'Set GITHUB_TOKEN.';
+    }else if(x.id==='supabase'){status=process.env.SUPABASE_URL&&process.env.SUPABASE_SERVICE_ROLE_KEY?'connected':'not_configured';detail=status==='connected'?'Supabase API is configured.':'Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.';
+    }else if(x.id==='openai'){status=process.env.OPENAI_API_KEY?'connected':'not_configured';detail=status==='connected'?'OpenAI API is configured.':'Set OPENAI_API_KEY.';
+    }else if(x.id==='claude'){status=process.env.ANTHROPIC_API_KEY?'connected':'not_configured';detail=status==='connected'?'Anthropic API is configured.':'Set ANTHROPIC_API_KEY.';
+    }else if(x.id==='gemini'){status=process.env.GEMINI_API_KEY?'connected':'not_configured';detail=status==='connected'?'Gemini API is configured.':'Set GEMINI_API_KEY.';
+    }else if(x.id==='slack'){status=process.env.SLACK_BOT_TOKEN?'connected':'not_configured';detail=status==='connected'?'Slack token is configured.':'Set SLACK_BOT_TOKEN.';
+    }else if(x.id==='render'){status=process.env.RENDER_API_KEY?'connected':'not_configured';detail=status==='connected'?'Render API is configured.':'Set RENDER_API_KEY.';
     items.push({...x,status,detail,action,actionLabel});
   }
   res.json({items});
@@ -767,9 +783,9 @@ app.post('/api/connectors/:id/action',requireAuth,async(req,res)=>{
     record(req.session,'CONNECTOR_ACTION','connect_google',{connectorId:'google'});
     return res.json({success:true,redirect:'https://accounts.google.com/o/oauth2/v2/auth?'+params.toString()});
   }
-  if(req.params.id==='core'||req.params.id==='noetica'){
+  if(req.params.id==='core'||req.params.id==='noetica'||['github','supabase','openai','claude','gemini','slack','render'].includes(req.params.id)){
     record(req.session,'CONNECTOR_ACTION','health_check',{connectorId:req.params.id});
-    return res.json({success:true,message:'Connector health check completed. Refresh the Connectors section to see the live status.'});
+    return res.json({success:true,message:'Connector status check completed. Refresh the Connectors section to see the live status.'});
   }
   return res.status(404).json({error:'Connector not found.'});
 });
