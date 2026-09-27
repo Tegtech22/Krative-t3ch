@@ -666,7 +666,7 @@ initDatabase()
       console.log('KIA listening on '+PORT);
       if(process.env.KIA_STARTUP_E2E_TEST==='true'){
         const session={staffId:'startup-e2e',role:'test',createdAt:new Date().toISOString()};
-        runKiaIntelligence('KIA startup integration test: explain in one sentence what Krative Core does.')
+        runKiaIntelligence('KIA startup integration test: explain in one sentence what Krative Core does.',session)
           .then(result=>{
             const coreResult=result.noetica?.result;
             const passed=Boolean(result.success&&result.response&&coreResult?.status==='completed');
