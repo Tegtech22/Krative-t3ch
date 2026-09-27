@@ -1,0 +1,243 @@
+name: Patch KIA Core Connectivity and Chat UX
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/patch-kia.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Patch KIA
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          server = Path("kia/server.js")
+          s = server.read_text()
+
+          old = """async function runKiaIntelligence(input, session){"""
+          new = """async function checkKiaDependency(url, retries=3, timeoutMs=15000){
+            let lastError=null;
+            for(let attempt=0;attempt<retries;attempt++){
+              const controller=new AbortController();
+              const timer=setTimeout(()=>controller.abort(),timeoutMs);
+              try{
+                const response=await fetch(url,{signal:controller.signal});
+                if(response.ok) return {reachable:true,status:response.status};
+                lastError=new Error('HTTP '+response.status);
+              }catch(error){
+                lastError=error;
+              }finally{
+                clearTimeout(timer);
+              }
+              if(attempt<retries-1) await new Promise(resolve=>setTimeout(resolve,1500*(attempt+1)));
+            }
+            return {reachable:false,error:lastError?.message||'unreachable'};
+          }
+
+          async function warmKiaIntelligenceDependencies(){
+            const results=await Promise.all([
+              checkKiaDependency(CORE_URL+'/health',3,12000),
+              checkKiaDependency(NOETICA_URL+'/health',3,12000)
+            ]);
+            return {core:results[0],noetica:results[1]};
+          }
+
+          async function runKiaIntelligence(input, session){"""
+          if old not in s: raise SystemExit("runKiaIntelligence marker not found")
+          s=s.replace(old,new,1)
+
+          old = """  if(!NOETICA_API_KEY) throw Object.assign(new Error('NOETICA API key is not configured on KIA.'),{statusCode:503});
+
+          const controller=typeof AbortController==='function'?new AbortController():null;
+          const timeoutMs=Number(process.env.NOETICA_TIMEOUT_MS||35000);
+          const timeoutHandle=controller?setTimeout(()=>controller.abort(),timeoutMs):null;
+          let r;
+          let data={};
+          const maxRetries=3;
+          for(let attempt=0;attempt<maxRetries;attempt++){
+            try{
+              r=await fetch(NOETICA_URL+'/api/v1/intelligence',{
+                method:'POST',
+                headers:{'Content-Type':'application/json',Authorization:'Bearer '+NOETICA_API_KEY},
+                body:JSON.stringify({input,context:{...coreContext,memoryKey:session.staffId}}),
+                ...(controller?{signal:controller.signal}: {})
+              });
+            }catch(error){
+              if(error?.name==='AbortError'){
+                throw Object.assign(new Error('NOETICA request timed out after '+timeoutMs+'ms.'),{statusCode:504,detail:'NOETICA upstream timeout.'});
+              }
+              if(attempt<maxRetries-1){
+                await new Promise(resolve=>setTimeout(resolve,3000*(2**attempt)));
+                continue;
+              }
+              throw Object.assign(new Error('Unable to connect to NOETICA.'),{statusCode:502,detail:error?.message||'NOETICA connection failed.'});
+            }
+
+            const raw=await r.text();
+            if(raw.trim()){
+              try{data=JSON.parse(raw);}catch{
+                if([429,502,503,504].includes(r.status)&&attempt<maxRetries-1){
+                  await new Promise(resolve=>setTimeout(resolve,500*(attempt+1)));
+                  continue;
+                }
+                throw Object.assign(new Error('Invalid NOETICA response.'),{statusCode:502,detail:'NOETICA returned non-JSON HTTP '+r.status+' content-type='+(r.headers.get('content-type')||'unknown')+'.'});
+              }
+            }
+            break;
+          }"""
+          new = """  if(!NOETICA_API_KEY) throw Object.assign(new Error('NOETICA API key is not configured on KIA.'),{statusCode:503});
+
+          const warm=await warmKiaIntelligenceDependencies();
+          if(!warm.noetica.reachable){
+            throw Object.assign(new Error('NOETICA is temporarily unreachable.'),{statusCode:502,detail:warm.noetica.error||'NOETICA health check failed.'});
+          }
+
+          let r;
+          let data={};
+          const maxRetries=4;
+          const timeoutMs=Number(process.env.NOETICA_TIMEOUT_MS||45000);
+          for(let attempt=0;attempt<maxRetries;attempt++){
+            const controller=typeof AbortController==='function'?new AbortController():null;
+            const timeoutHandle=controller?setTimeout(()=>controller.abort(),timeoutMs):null;
+            try{
+              r=await fetch(NOETICA_URL+'/api/v1/intelligence',{
+                method:'POST',
+                headers:{'Content-Type':'application/json',Authorization:'Bearer '+NOETICA_API_KEY},
+                body:JSON.stringify({input,context:{...coreContext,memoryKey:session.staffId}}),
+                ...(controller?{signal:controller.signal}: {})
+              });
+            }catch(error){
+              if(error?.name==='AbortError'){
+                if(attempt<maxRetries-1){
+                  await new Promise(resolve=>setTimeout(resolve,2000*(attempt+1)));
+                  continue;
+                }
+                throw Object.assign(new Error('NOETICA request timed out after '+timeoutMs+'ms.'),{statusCode:504,detail:'NOETICA upstream timeout.'});
+              }
+              if(attempt<maxRetries-1){
+                await new Promise(resolve=>setTimeout(resolve,2000*(attempt+1)));
+                continue;
+              }
+              throw Object.assign(new Error('Unable to connect to NOETICA.'),{statusCode:502,detail:error?.message||'NOETICA connection failed.'});
+            }finally{
+              if(timeoutHandle) clearTimeout(timeoutHandle);
+            }
+
+            const raw=await r.text();
+            if(raw.trim()){
+              try{data=JSON.parse(raw);}catch{
+                if([429,502,503,504].includes(r.status)&&attempt<maxRetries-1){
+                  await new Promise(resolve=>setTimeout(resolve,1500*(attempt+1)));
+                  continue;
+                }
+                throw Object.assign(new Error('Invalid NOETICA response.'),{statusCode:502,detail:'NOETICA returned non-JSON HTTP '+r.status+' content-type='+(r.headers.get('content-type')||'unknown')+'.'});
+              }
+            }
+            if([429,502,503,504].includes(r.status)&&attempt<maxRetries-1){
+              await new Promise(resolve=>setTimeout(resolve,1500*(attempt+1)));
+              continue;
+            }
+            break;
+          }"""
+          if old not in s: raise SystemExit("NOETICA block not found")
+          s=s.replace(old,new,1)
+
+          old = """app.get('/api/status',requireAuth,async(req,res)=>{
+            let core={configured:Boolean(CORE_API_KEY),reachable:false};
+            try{const r=await fetch(CORE_URL+'/health');core.reachable=r.ok}catch{}
+            res.json({
+              service:'KIA',
+              core,
+              capabilities:['understanding','classification','knowledge','memory','reasoning','decision','execution','learning','audit'],
+              authentication:{signup:true,approval:true,role:req.session.role}
+            });
+          });"""
+          new = """app.get('/api/status',requireAuth,async(req,res)=>{
+            const core={configured:Boolean(CORE_API_KEY),reachable:false,status:null,error:null};
+            if(core.configured){
+              const check=await checkKiaDependency(CORE_URL+'/health',3,15000);
+              core.reachable=check.reachable;
+              core.status=check.status||null;
+              core.error=check.error||null;
+            }
+            res.json({
+              service:'KIA',
+              core,
+              noetica:{configured:Boolean(NOETICA_API_KEY),baseUrl:NOETICA_URL},
+              capabilities:['understanding','classification','knowledge','memory','reasoning','decision','execution','learning','audit'],
+              authentication:{signup:true,approval:true,role:req.session.role}
+            });
+          });"""
+          if old not in s: raise SystemExit("status route not found")
+          s=s.replace(old,new,1)
+
+          old = """    if(x.id==='core'){
+      try{const r=await fetch(CORE_URL+'/health');status=x.enabled&&r.ok?'connected':'unreachable';detail=r.ok?'Core health check passed.':'Core health check failed.';}catch(e){status='unreachable';detail='Core health check failed.';}
+    }else if(x.id==='noetica'){
+      try{const r=await fetch(NOETICA_URL+'/health');status=x.enabled&&r.ok?'connected':'unreachable';detail=r.ok?'NOETICA health check passed.':'NOETICA health check failed.';}catch(e){status='unreachable';detail='NOETICA health check failed.';}
+"""
+          new = """    if(x.id==='core'){
+      const check=await checkKiaDependency(CORE_URL+'/health',3,12000);
+      status=x.enabled&&check.reachable?'connected':'unreachable';
+      detail=check.reachable?'Core health check passed.':('Core health check failed: '+(check.error||'unreachable'));
+    }else if(x.id==='noetica'){
+      const check=await checkKiaDependency(NOETICA_URL+'/health',3,12000);
+      status=x.enabled&&check.reachable?'connected':'unreachable';
+      detail=check.reachable?'NOETICA health check passed.':('NOETICA health check failed: '+(check.error||'unreachable'));
+"""
+          if old not in s: raise SystemExit("connector health block not found")
+          s=s.replace(old,new,1)
+
+          server.write_text(s)
+
+          page=Path("kia/public/index.html")
+          p=page.read_text()
+          p=p.replace('.chat{height:470px;', '.chat{height:calc(100vh - 125px);min-height:520px;')
+          p=p.replace('.composer{display:flex;gap:8px;margin-top:10px}', '.composer{display:flex;gap:8px;margin-top:10px}.chat-toolbar{display:flex;gap:8px;align-items:center}.message-actions{display:flex;gap:6px;margin-top:7px}.message-actions button{font-size:12px;padding:5px 8px}.thinking{color:var(--muted);font-style:italic}.suggestions{display:flex;gap:7px;flex-wrap:wrap;margin-top:8px}.suggestion{background:transparent;border:1px solid var(--line);color:var(--muted);padding:7px 10px;border-radius:999px}')
+          p=p.replace('<div class="row"><div><h2>KIA Intelligence</h2><div class="muted">UNDERSTAND → CLASSIFY → ROUTE → UIS → RETRIEVE → KIF → REASON → DECIDE → UPDATE</div></div></div>',
+            '<div class="row"><div><h2>KIA Intelligence</h2><div class="muted">UNDERSTAND → CLASSIFY → ROUTE → UIS → RETRIEVE → KIF → REASON → DECIDE → UPDATE</div></div><div class="chat-toolbar"><button class="ghost" id="newChat">New chat</button><button class="ghost" id="regenerate">Regenerate</button></div></div>')
+          p=p.replace('<div class="composer"><textarea id="prompt" placeholder="Ask KIA about Krative T3ch, a project, a decision, knowledge, or a task…"></textarea><button class="primary" id="send">Send</button></div>',
+            '<div class="suggestions"><button class="suggestion" data-prompt="Give me a quick briefing on Krative T3ch.">Krative briefing</button><button class="suggestion" data-prompt="Help me plan my next project step.">Plan a project</button><button class="suggestion" data-prompt="Explain what Krative Core does.">Explain Core</button></div><div class="composer"><textarea id="prompt" placeholder="Message KIA…"></textarea><button class="primary" id="send">Send</button></div>')
+          old = '''$("send").onclick=async()=>{const input=$("prompt").value.trim();if(!input)return;addMsg("user",input);$("prompt").value="";$("send").disabled=true;$("send").textContent="Thinking…";try{const d=await api("/api/chat",{method:"POST",body:JSON.stringify({input})});let reply=d.response||"KIA received the request but did not return a readable response.";addMsg("kia",reply)}catch(e){addMsg("kia","KIA: "+e.message)}finally{$("send").disabled=false;$("send").textContent="Send"}};
+$("prompt").onkeydown=e=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();$("send").click()}};
+function addMsg(kind,text){const d=document.createElement("div");d.className="msg "+kind;d.textContent=text;$("messages").appendChild(d);$("messages").scrollTop=$("messages").scrollHeight}}'''
+          new = '''let chatHistory=JSON.parse(localStorage.getItem("kia_chat_history")||"[]");let activeController=null;let lastPrompt="";
+function saveChat(){localStorage.setItem("kia_chat_history",JSON.stringify(chatHistory.slice(-100)));}
+function renderChat(){const box=$("messages");box.innerHTML="";if(!chatHistory.length){const d=document.createElement("div");d.className="msg kia";d.innerHTML="<b>KIA is ready.</b><br>I can understand your request, use KIA memory and knowledge, route it through NOETICA and Krative Core, and return a useful response.";box.appendChild(d);return;}chatHistory.forEach((m,i)=>addMsg(m.role,m.text,false,i));box.scrollTop=box.scrollHeight;}
+function addMsg(kind,text,persist=true,index=null){const d=document.createElement("div");d.className="msg "+kind;const body=document.createElement("div");body.textContent=text;d.appendChild(body);if(kind==="kia"){const actions=document.createElement("div");actions.className="message-actions";const copy=document.createElement("button");copy.className="ghost";copy.textContent="Copy";copy.onclick=()=>navigator.clipboard?.writeText(text);actions.appendChild(copy);const idx=index===null?chatHistory.length-1:index;if(idx>=0){const regen=document.createElement("button");regen.className="ghost";regen.textContent="Regenerate";regen.onclick=()=>regenerateAt(idx);actions.appendChild(regen);}d.appendChild(actions);}$("messages").appendChild(d);$("messages").scrollTop=$("messages").scrollHeight;if(persist&&text){chatHistory.push({role:kind,text});saveChat();}}
+async function sendMessage(input,replaceIndex=null){if(!input||$("send").disabled)return;lastPrompt=input;$("send").disabled=true;$("send").textContent="Thinking…";if(replaceIndex===null){chatHistory.push({role:"user",text:input});saveChat();renderChat();}else{chatHistory[replaceIndex-1]={role:"user",text:input};chatHistory.splice(replaceIndex,1);saveChat();renderChat();}$("prompt").value="";const thinking=document.createElement("div");thinking.className="msg kia thinking";thinking.textContent="KIA is thinking…";thinking.id="thinking";$("messages").appendChild(thinking);$("messages").scrollTop=$("messages").scrollHeight;try{const d=await api("/api/chat",{method:"POST",body:JSON.stringify({input})});$("thinking")?.remove();chatHistory.push({role:"kia",text:d.response||"KIA received the request but did not return a readable response."});saveChat();renderChat();}catch(e){$("thinking")?.remove();chatHistory.push({role:"kia",text:"KIA: "+e.message});saveChat();renderChat();}finally{$("send").disabled=false;$("send").textContent="Send";}}
+$("send").onclick=()=>sendMessage($("prompt").value.trim());
+$("prompt").onkeydown=e=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();$("send").click()}};
+$("newChat").onclick=()=>{chatHistory=[];saveChat();renderChat();$("prompt").focus();};
+$("regenerate").onclick=()=>{for(let i=chatHistory.length-1;i>=0;i--){if(chatHistory[i].role==="kia"&&i>0){const prompt=chatHistory[i-1].text;chatHistory.splice(i-1,2);saveChat();renderChat();sendMessage(prompt);return;}}};
+async function regenerateAt(index){if(index<=0||chatHistory[index].role!=="kia")return;const prompt=chatHistory[index-1]?.text;if(!prompt)return;chatHistory.splice(index-1,2);saveChat();renderChat();await sendMessage(prompt);}
+document.querySelectorAll(".suggestion").forEach(b=>b.onclick=()=>sendMessage(b.dataset.prompt));
+renderChat();'''
+          if old not in p: raise SystemExit("chat handler block not found")
+          p=p.replace(old,new,1)
+          p=p.replace('$("coreStatus").textContent=s.core.reachable?"Core connected":"Core "+(s.core.configured?"unreachable":"credential not configured");',
+                      '$("coreStatus").textContent=s.core.reachable?"Core connected":"Core "+(s.core.configured?"warming / unreachable":"credential not configured");')
+          page.write_text(p)
+          PY
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add kia/server.js kia/public/index.html
+          git commit -m "Fix KIA Core connectivity and improve ChatGPT-style chat UX [skip ci]" || true
+          git push
+          rm -f .github/workflows/patch-kia.yml
+          git add .github/workflows/patch-kia.yml
+          git commit -m "Remove temporary KIA patch workflow [skip ci]" || true
+          git push
