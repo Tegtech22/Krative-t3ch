@@ -683,7 +683,10 @@ initDatabase()
       console.log('KIA listening on '+PORT);
       if(process.env.KIA_STARTUP_E2E_TEST==='true'){
         const session={staffId:'startup-e2e',role:'test',createdAt:new Date().toISOString()};
-        runKiaIntelligence('KIA startup integration test: explain in one sentence what Krative Core does.',session)
+        const warm=(url)=>fetch(url,{signal:typeof AbortSignal?.timeout==='function'?AbortSignal.timeout(20000):undefined}).catch(()=>null);
+        Promise.all([warm(NOETICA_URL+'/health'),warm(CORE_BASE_URL+'/health')])
+          .then(()=>new Promise(resolve=>setTimeout(resolve,5000)))
+          .then(()=>runKiaIntelligence('KIA startup integration test: explain in one sentence what Krative Core does.',session))
           .then(result=>{
             const coreResult=result.noetica?.result;
             const passed=Boolean(result.success&&result.response&&coreResult?.status==='completed');
