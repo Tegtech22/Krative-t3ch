@@ -568,7 +568,7 @@ async function runKiaIntelligence(input, session){
         throw Object.assign(new Error('NOETICA request timed out after '+timeoutMs+'ms.'),{statusCode:504,detail:'NOETICA upstream timeout.'});
       }
       if(attempt<maxRetries-1){
-        await new Promise(resolve=>setTimeout(resolve,500*(attempt+1)));
+        await new Promise(resolve=>setTimeout(resolve,3000*(2**attempt)));
         continue;
       }
       throw Object.assign(new Error('Unable to connect to NOETICA.'),{statusCode:502,detail:error?.message||'NOETICA connection failed.'});
