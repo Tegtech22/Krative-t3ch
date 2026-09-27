@@ -592,7 +592,8 @@ async function runKiaIntelligence(input, session){
 
   if(!NOETICA_API_KEY) throw Object.assign(new Error('NOETICA API key is not configured on KIA.'),{statusCode:503});
   const warm=await warmKiaIntelligenceDependencies();
-  if(!warm.noetica.reachable) throw Object.assign(new Error('NOETICA is temporarily unreachable.'),{statusCode:502,detail:warm.noetica.error||'NOETICA health check failed.'});
+  if(!warm.core.reachable) throw Object.assign(new Error('Krative Core is temporarily unreachable. NOETICA cannot complete the intelligence process until Core is ready.'),{statusCode:502,detail:warm.core.error||'Krative Core health check failed.',retryable:true,dependency:'krative-core'});
+  if(!warm.noetica.reachable) throw Object.assign(new Error('NOETICA is temporarily unreachable.'),{statusCode:502,detail:warm.noetica.error||'NOETICA health check failed.',retryable:true,dependency:'noetica'});
   let r,data={};
   const maxRetries=4;
   const timeoutMs=Number(process.env.NOETICA_TIMEOUT_MS||45000);
@@ -615,7 +616,8 @@ async function runKiaIntelligence(input, session){
   }
   if(!r?.ok){
     record(session,'INTELLIGENCE_ERROR','noetica_response_error',{status:r?.status||0});
-    throw Object.assign(new Error(data?.error||'NOETICA request failed.'),{statusCode:502,detail:data?.error||'NOETICA request failed.'});
+    const message=data?.error||data?.result?.response?.message||'NOETICA request failed.';
+    throw Object.assign(new Error(message),{statusCode:502,detail:data?.error||message,retryable:[429,502,503,504].includes(r?.status),dependency:'noetica'});
   }
 
   const response=buildKiaResponse(data);
