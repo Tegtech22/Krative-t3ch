@@ -858,6 +858,7 @@ initDatabase()
             }));
           })
           .catch(error=>console.error(JSON.stringify({type:'KIA_STARTUP_E2E',passed:false,error:error.message,detail:error.detail||null})));
+        runConfiguredPluginSmokeTests().catch(error=>console.error(JSON.stringify({type:'KIA_PLUGIN_SMOKE_TEST',tests:[],error:error.message})));
       }
     });
   })
