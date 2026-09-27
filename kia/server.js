@@ -662,7 +662,26 @@ initDatabase()
   .then(loadUsers)
   .then(loadPersistentState)
   .then(()=>{
-    app.listen(PORT,'0.0.0.0',()=>console.log('KIA listening on '+PORT));
+    app.listen(PORT,'0.0.0.0',()=>{
+      console.log('KIA listening on '+PORT);
+      if(process.env.KIA_STARTUP_E2E_TEST==='true'){
+        const session={staffId:'startup-e2e',role:'test',createdAt:new Date().toISOString()};
+        runKiaIntelligence('KIA startup integration test: explain in one sentence what Krative Core does.')
+          .then(result=>{
+            const coreResult=result.noetica?.result;
+            const passed=Boolean(result.success&&result.response&&coreResult?.status==='completed');
+            console.log(JSON.stringify({
+              type:'KIA_STARTUP_E2E',passed,
+              noeticaSuccess:result.noetica?.success===true,
+              coreStatus:coreResult?.status||null,
+              coreStage:coreResult?.stage||null,
+              kifStatus:coreResult?.kif?.status||coreResult?.result?.kif?.status||null,
+              kifSourceCount:coreResult?.kif?.sourceCount||coreResult?.result?.kif?.sourceCount||null
+            }));
+          })
+          .catch(error=>console.error(JSON.stringify({type:'KIA_STARTUP_E2E',passed:false,error:error.message})));
+      }
+    });
   })
   .catch(error=>{
     console.error('KIA database initialization failed:',error);
