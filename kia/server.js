@@ -696,7 +696,7 @@ initDatabase()
               kifSourceCount:coreResult?.kif?.sourceCount||coreResult?.result?.kif?.sourceCount||null
             }));
           })
-          .catch(error=>console.error(JSON.stringify({type:'KIA_STARTUP_E2E',passed:false,error:error.message})));
+          .catch(error=>console.error(JSON.stringify({type:'KIA_STARTUP_E2E',passed:false,error:error.message,detail:error.detail||null})));
       }
     });
   })
