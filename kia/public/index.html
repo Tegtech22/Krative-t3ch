@@ -60,6 +60,8 @@ async function loadConnectors(){
   document.querySelectorAll("[data-connector-action]").forEach(btn=>btn.onclick=()=>connectorAction(btn.dataset.connectorAction));
 }
 async function connectorAction(id){try{const d=await api("/api/connectors/"+encodeURIComponent(id)+"/action",{method:"POST",body:JSON.stringify({})});if(d.redirect)location.href=d.redirect;else{alert(d.message||"Connector action completed.");loadConnectors()}}catch(e){alert(e.message)}}
+$("refreshPlugins").onclick=loadPlugins;
+$("refreshConnectors").onclick=loadConnectors;
 function esc(s){return String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]))}
 const googleParams=new URLSearchParams(location.search);
 const googleToken=googleParams.get("google_token");
