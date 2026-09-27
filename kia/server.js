@@ -553,24 +553,41 @@ async function runKiaIntelligence(input, session){
   const timeoutMs=Number(process.env.NOETICA_TIMEOUT_MS||35000);
   const timeoutHandle=controller?setTimeout(()=>controller.abort(),timeoutMs):null;
   let r;
-  try{
-    r=await fetch(NOETICA_URL+'/api/v1/intelligence',{
-      method:'POST',
-      headers:{'Content-Type':'application/json',Authorization:'Bearer '+NOETICA_API_KEY},
-      body:JSON.stringify({input,context:{...coreContext,memoryKey:session.staffId}}),
-      ...(controller?{signal:controller.signal}: {})
-    });
-  }catch(error){
-    if(error?.name==='AbortError'){
-      throw Object.assign(new Error('NOETICA request timed out after '+timeoutMs+'ms.'),{statusCode:504,detail:'NOETICA upstream timeout.'});
+  let data={};
+  const maxRetries=3;
+  for(let attempt=0;attempt<maxRetries;attempt++){
+    try{
+      r=await fetch(NOETICA_URL+'/api/v1/intelligence',{
+        method:'POST',
+        headers:{'Content-Type':'application/json',Authorization:'Bearer '+NOETICA_API_KEY},
+        body:JSON.stringify({input,context:{...coreContext,memoryKey:session.staffId}}),
+        ...(controller?{signal:controller.signal}: {})
+      });
+    }catch(error){
+      if(error?.name==='AbortError'){
+        throw Object.assign(new Error('NOETICA request timed out after '+timeoutMs+'ms.'),{statusCode:504,detail:'NOETICA upstream timeout.'});
+      }
+      if(attempt<maxRetries-1){
+        await new Promise(resolve=>setTimeout(resolve,500*(attempt+1)));
+        continue;
+      }
+      throw Object.assign(new Error('Unable to connect to NOETICA.'),{statusCode:502,detail:error?.message||'NOETICA connection failed.'});
     }
-    throw Object.assign(new Error('Unable to connect to NOETICA.'),{statusCode:502,detail:error?.message||'NOETICA connection failed.'});
-  }finally{
-    if(timeoutHandle) clearTimeout(timeoutHandle);
+
+    const raw=await r.text();
+    if(raw.trim()){
+      try{data=JSON.parse(raw);}catch{
+        if([429,502,503,504].includes(r.status)&&attempt<maxRetries-1){
+          await new Promise(resolve=>setTimeout(resolve,500*(attempt+1)));
+          continue;
+        }
+        throw Object.assign(new Error('Invalid NOETICA response.'),{statusCode:502,detail:'NOETICA returned non-JSON HTTP '+r.status+'.'});
+      }
+    }
+    break;
   }
-  const data=await r.json().catch(()=>({error:'Invalid NOETICA response.'}));
-  if(!r.ok){
-    record(session,'INTELLIGENCE_ERROR','noetica_response_error',{status:r.status});
+  if(!r?.ok){
+    record(session,'INTELLIGENCE_ERROR','noetica_response_error',{status:r?.status||0});
     throw Object.assign(new Error(data?.error||'NOETICA request failed.'),{statusCode:502,detail:data?.error||'NOETICA request failed.'});
   }
 
