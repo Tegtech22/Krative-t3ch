@@ -716,7 +716,7 @@ app.get('/api/plugins',requireAuth,async(req,res)=>{
   const {rows}=await pool.query('SELECT id,name,description,category,enabled FROM kia_plugins ORDER BY name');
   res.json({items:rows.map(x=>({...x,status:x.enabled?'active':'disabled',actions:x.enabled&&['intelligence'].includes(x.id)?['run']:[]}))});
 });
-app.put('/api/plugins/:id',requireAuth,async(req,res)=>{
+app.put('/api/plugins/:id',requireAuth,requireAdmin,async(req,res)=>{
   const enabled=Boolean(req.body?.enabled);
   const {rows}=await pool.query('UPDATE kia_plugins SET enabled=$1,updated_at=NOW() WHERE id=$2 RETURNING id,name,enabled',[enabled,req.params.id]);
   if(!rows[0]) return res.status(404).json({error:'Plugin not found.'});
