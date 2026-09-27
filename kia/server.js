@@ -450,14 +450,9 @@ app.get('/api/session',requireAuth,(req,res)=>{
 });
 
 app.get('/api/status',requireAuth,async(req,res)=>{
-  let core={configured:Boolean(CORE_API_KEY),reachable:false};
-  try{const r=await fetch(CORE_URL+'/health');core.reachable=r.ok}catch{}
-  res.json({
-    service:'KIA',
-    core,
-    capabilities:['understanding','classification','knowledge','memory','reasoning','decision','execution','learning','audit'],
-    authentication:{signup:true,approval:true,role:req.session.role}
-  });
+  const core={configured:Boolean(CORE_API_KEY),reachable:false,status:null,error:null};
+  if(core.configured){const check=await checkKiaDependency(CORE_URL+'/health',3,15000);core.reachable=check.reachable;core.status=check.status||null;core.error=check.error||null;}
+  res.json({service:'KIA',core,noetica:{configured:Boolean(NOETICA_API_KEY),baseUrl:NOETICA_URL},capabilities:['understanding','classification','knowledge','memory','reasoning','decision','execution','learning','audit'],authentication:{signup:true,approval:true,role:req.session.role}});
 });
 
 app.get('/api/admin/pending',requireAuth,requireAdmin,(req,res)=>{
@@ -559,6 +554,25 @@ function buildKiaResponse(data){
   return JSON.stringify(result,null,2);
 }
 
+async function checkKiaDependency(url, retries=3, timeoutMs=15000){
+  let lastError=null;
+  for(let attempt=0;attempt<retries;attempt++){
+    const controller=new AbortController();
+    const timer=setTimeout(()=>controller.abort(),timeoutMs);
+    try{
+      const response=await fetch(url,{signal:controller.signal});
+      if(response.ok) return {reachable:true,status:response.status};
+      lastError=new Error('HTTP '+response.status);
+    }catch(error){lastError=error;}
+    finally{clearTimeout(timer);}
+    if(attempt<retries-1) await new Promise(resolve=>setTimeout(resolve,1500*(attempt+1)));
+  }
+  return {reachable:false,error:lastError?.message||'unreachable'};
+}
+async function warmKiaIntelligenceDependencies(){
+  const results=await Promise.all([checkKiaDependency(CORE_URL+'/health',3,12000),checkKiaDependency(NOETICA_URL+'/health',3,12000)]);
+  return {core:results[0],noetica:results[1]};
+}
 async function runKiaIntelligence(input, session){
   if(!input) throw Object.assign(new Error('Input is required.'),{statusCode:400});
   if(!CORE_API_KEY) throw Object.assign(new Error('Krative Core API key is not configured on KIA.'),{statusCode:503});
@@ -577,42 +591,26 @@ async function runKiaIntelligence(input, session){
   };
 
   if(!NOETICA_API_KEY) throw Object.assign(new Error('NOETICA API key is not configured on KIA.'),{statusCode:503});
-
-  const controller=typeof AbortController==='function'?new AbortController():null;
-  const timeoutMs=Number(process.env.NOETICA_TIMEOUT_MS||35000);
-  const timeoutHandle=controller?setTimeout(()=>controller.abort(),timeoutMs):null;
-  let r;
-  let data={};
-  const maxRetries=3;
+  const warm=await warmKiaIntelligenceDependencies();
+  if(!warm.noetica.reachable) throw Object.assign(new Error('NOETICA is temporarily unreachable.'),{statusCode:502,detail:warm.noetica.error||'NOETICA health check failed.'});
+  let r,data={};
+  const maxRetries=4;
+  const timeoutMs=Number(process.env.NOETICA_TIMEOUT_MS||45000);
   for(let attempt=0;attempt<maxRetries;attempt++){
+    const controller=typeof AbortController==='function'?new AbortController():null;
+    const timeoutHandle=controller?setTimeout(()=>controller.abort(),timeoutMs):null;
     try{
-      r=await fetch(NOETICA_URL+'/api/v1/intelligence',{
-        method:'POST',
-        headers:{'Content-Type':'application/json',Authorization:'Bearer '+NOETICA_API_KEY},
-        body:JSON.stringify({input,context:{...coreContext,memoryKey:session.staffId}}),
-        ...(controller?{signal:controller.signal}: {})
-      });
+      r=await fetch(NOETICA_URL+'/api/v1/intelligence',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+NOETICA_API_KEY},body:JSON.stringify({input,context:{...coreContext,memoryKey:session.staffId}}),...(controller?{signal:controller.signal}:{})});
     }catch(error){
-      if(error?.name==='AbortError'){
-        throw Object.assign(new Error('NOETICA request timed out after '+timeoutMs+'ms.'),{statusCode:504,detail:'NOETICA upstream timeout.'});
-      }
-      if(attempt<maxRetries-1){
-        await new Promise(resolve=>setTimeout(resolve,3000*(2**attempt)));
-        continue;
-      }
-      throw Object.assign(new Error('Unable to connect to NOETICA.'),{statusCode:502,detail:error?.message||'NOETICA connection failed.'});
-    }
-
+      if(attempt<maxRetries-1){await new Promise(resolve=>setTimeout(resolve,2000*(attempt+1)));continue;}
+      throw Object.assign(new Error(error?.name==='AbortError'?'NOETICA request timed out after '+timeoutMs+'ms.':'Unable to connect to NOETICA.'),{statusCode:error?.name==='AbortError'?504:502,detail:error?.message||'NOETICA connection failed.'});
+    }finally{if(timeoutHandle)clearTimeout(timeoutHandle);}
     const raw=await r.text();
-    if(raw.trim()){
-      try{data=JSON.parse(raw);}catch{
-        if([429,502,503,504].includes(r.status)&&attempt<maxRetries-1){
-          await new Promise(resolve=>setTimeout(resolve,500*(attempt+1)));
-          continue;
-        }
-        throw Object.assign(new Error('Invalid NOETICA response.'),{statusCode:502,detail:'NOETICA returned non-JSON HTTP '+r.status+' content-type='+(r.headers.get('content-type')||'unknown')+'.'});
-      }
-    }
+    if(raw.trim()){try{data=JSON.parse(raw);}catch{
+      if([429,502,503,504].includes(r.status)&&attempt<maxRetries-1){await new Promise(resolve=>setTimeout(resolve,1500*(attempt+1)));continue;}
+      throw Object.assign(new Error('Invalid NOETICA response.'),{statusCode:502,detail:'NOETICA returned non-JSON HTTP '+r.status+' content-type='+(r.headers.get('content-type')||'unknown')+'.'});
+    }}
+    if([429,502,503,504].includes(r.status)&&attempt<maxRetries-1){await new Promise(resolve=>setTimeout(resolve,1500*(attempt+1)));continue;}
     break;
   }
   if(!r?.ok){
@@ -797,9 +795,9 @@ app.get('/api/connectors',requireAuth,async(req,res)=>{
   for(const x of rows){
     let status=x.enabled?'configured':'disabled',detail='',action=null,actionLabel=null;
     if(x.id==='core'){
-      try{const r=await fetch(CORE_URL+'/health');status=x.enabled&&r.ok?'connected':'unreachable';detail=r.ok?'Core health check passed.':'Core health check failed.';}catch(e){status='unreachable';detail='Core health check failed.';}
+      const check=await checkKiaDependency(CORE_URL+'/health',3,12000);status=x.enabled&&check.reachable?'connected':'unreachable';detail=check.reachable?'Core health check passed.':('Core health check failed: '+(check.error||'unreachable'));
     }else if(x.id==='noetica'){
-      try{const r=await fetch(NOETICA_URL+'/health');status=x.enabled&&r.ok?'connected':'unreachable';detail=r.ok?'NOETICA health check passed.':'NOETICA health check failed.';}catch(e){status='unreachable';detail='NOETICA health check failed.';}
+      const check=await checkKiaDependency(NOETICA_URL+'/health',3,12000);status=x.enabled&&check.reachable?'connected':'unreachable';detail=check.reachable?'NOETICA health check passed.':('NOETICA health check failed: '+(check.error||'unreachable'));
     }else if(x.id==='google'){status=GOOGLE_CLIENT_ID&&GOOGLE_CLIENT_SECRET?'ready':'not_configured';detail=status==='ready'?'Google OAuth is configured; staff authorization is required to connect.':'Google OAuth credentials are not configured.';action=status==='ready';actionLabel='Connect Google';
     }else if(x.id==='github'){status=process.env.GITHUB_TOKEN?'connected':'not_configured';detail=status==='connected'?'GitHub token is configured.':'Set GITHUB_TOKEN.';
     }else if(x.id==='supabase'){status=process.env.SUPABASE_URL&&process.env.SUPABASE_SERVICE_ROLE_KEY?'connected':'not_configured';detail=status==='connected'?'Supabase API is configured.':'Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.';
