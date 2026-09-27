@@ -630,6 +630,45 @@ async function runKiaIntelligence(input, session){
   return {success:true,response,intent,context:{memoryMatches:context.memories.length,knowledgeMatches:context.knowledge.length},noetica:data};
 }
 
+async function runConfiguredPluginSmokeTests(){
+  const input='KIA plugin smoke test: reply with OK.';
+  const tests=[];
+  const run=async(id,fn)=>{
+    const started=Date.now();
+    try{const output=await fn();tests.push({id,status:'passed',detail:output||'ok',ms:Date.now()-started});}
+    catch(error){tests.push({id,status:'failed',detail:error.message,ms:Date.now()-started});}
+  };
+  if(process.env.OPENAI_API_KEY) await run('openai',async()=>{
+    const r=await fetch('https://api.openai.com/v1/responses',{method:'POST',headers:{Authorization:'Bearer '+process.env.OPENAI_API_KEY,'Content-Type':'application/json'},body:JSON.stringify({model:process.env.KIA_OPENAI_PLUGIN_MODEL||'gpt-5.6-luna',input})});
+    const d=await r.json().catch(()=>({})); if(!r.ok) throw new Error(d.error?.message||'HTTP '+r.status); return d.output_text?'response received':'no output text';
+  });
+  if(process.env.ANTHROPIC_API_KEY) await run('claude',async()=>{
+    const r=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:{'x-api-key':process.env.ANTHROPIC_API_KEY,'anthropic-version':'2023-06-01','Content-Type':'application/json'},body:JSON.stringify({model:process.env.KIA_CLAUDE_PLUGIN_MODEL||'claude-sonnet-5',max_tokens:32,messages:[{role:'user',content:input}]})});
+    const d=await r.json().catch(()=>({})); if(!r.ok) throw new Error(d.error?.message||'HTTP '+r.status); return Array.isArray(d.content)?'response received':'no content';
+  });
+  if(process.env.GITHUB_TOKEN) await run('github',async()=>{
+    const r=await fetch('https://api.github.com/user',{headers:{Authorization:'Bearer '+process.env.GITHUB_TOKEN,Accept:'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','User-Agent':'KIA-Krative-T3ch'}});
+    const d=await r.json().catch(()=>({})); if(!r.ok) throw new Error(d.message||'HTTP '+r.status); return 'authenticated as '+(d.login||'user');
+  });
+  if(process.env.SUPABASE_URL&&process.env.SUPABASE_SERVICE_ROLE_KEY) await run('supabase',async()=>{
+    const base=process.env.SUPABASE_URL.replace(/\/$/,''); const r=await fetch(base+'/rest/v1/',{headers:{apikey:process.env.SUPABASE_SERVICE_ROLE_KEY,Authorization:'Bearer '+process.env.SUPABASE_SERVICE_ROLE_KEY}});
+    if(!r.ok) throw new Error('HTTP '+r.status); return 'REST API reachable';
+  });
+  if(process.env.GEMINI_API_KEY) await run('gemini',async()=>{
+    const r=await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key='+encodeURIComponent(process.env.GEMINI_API_KEY),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({contents:[{parts:[{text:input}]}]})});
+    const d=await r.json().catch(()=>({})); if(!r.ok) throw new Error(d.error?.message||'HTTP '+r.status); return d.candidates?.length?'response received':'no candidates';
+  });
+  if(process.env.SLACK_BOT_TOKEN) await run('slack',async()=>{
+    const r=await fetch('https://slack.com/api/auth.test',{headers:{Authorization:'Bearer '+process.env.SLACK_BOT_TOKEN}});
+    const d=await r.json().catch(()=>({})); if(!r.ok||!d.ok) throw new Error(d.error||'HTTP '+r.status); return 'authenticated as '+(d.user_id||'bot');
+  });
+  if(process.env.RENDER_API_KEY) await run('render',async()=>{
+    const r=await fetch('https://api.render.com/v1/services?limit=1',{headers:{Authorization:'Bearer '+process.env.RENDER_API_KEY,'Accept':'application/json'}});
+    if(!r.ok) throw new Error('HTTP '+r.status); return 'Render API reachable';
+  });
+  console.log(JSON.stringify({type:'KIA_PLUGIN_SMOKE_TEST',tests,skipped:['gmail','google-calendar','google-drive'],note:'Google services require OAuth authorization.'}));
+}
+
 app.post('/api/chat',requireAuth,async(req,res)=>{
   const input=typeof(req.body&&req.body.input)==='string'?req.body.input.trim():'';
   try{
