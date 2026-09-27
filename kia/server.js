@@ -581,7 +581,7 @@ async function runKiaIntelligence(input, session){
           await new Promise(resolve=>setTimeout(resolve,500*(attempt+1)));
           continue;
         }
-        throw Object.assign(new Error('Invalid NOETICA response.'),{statusCode:502,detail:'NOETICA returned non-JSON HTTP '+r.status+'.'});
+        throw Object.assign(new Error('Invalid NOETICA response.'),{statusCode:502,detail:'NOETICA returned non-JSON HTTP '+r.status+' content-type='+(r.headers.get('content-type')||'unknown')+'.'});
       }
     }
     break;
