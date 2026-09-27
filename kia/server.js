@@ -769,6 +769,7 @@ app.get('/api/connectors',requireAuth,async(req,res)=>{
     }else if(x.id==='gemini'){status=process.env.GEMINI_API_KEY?'connected':'not_configured';detail=status==='connected'?'Gemini API is configured.':'Set GEMINI_API_KEY.';
     }else if(x.id==='slack'){status=process.env.SLACK_BOT_TOKEN?'connected':'not_configured';detail=status==='connected'?'Slack token is configured.':'Set SLACK_BOT_TOKEN.';
     }else if(x.id==='render'){status=process.env.RENDER_API_KEY?'connected':'not_configured';detail=status==='connected'?'Render API is configured.':'Set RENDER_API_KEY.';
+    }
     items.push({...x,status,detail,action,actionLabel});
   }
   res.json({items});
