@@ -631,19 +631,23 @@ app.post('/api/test/e2e',async(req,res)=>{
   const session={staffId:'e2e-test',role:'test',createdAt:new Date().toISOString()};
   try{
     const result=await runKiaIntelligence(input,session);
-    const coreResult=result.noetica?.result;
+    const noeticaResult=result.noetica?.result;
+    const coreResult=noeticaResult?.core?.state;
     const passed=Boolean(
       result.success &&
       result.response &&
-      coreResult &&
-      coreResult.status==='completed'
+      noeticaResult?.status==='completed' &&
+      coreResult?.status==='completed' &&
+      coreResult?.stage==='EXECUTION' &&
+      coreResult?.kif?.status==='fused'
     );
     return res.status(passed?200:502).json({
       passed,
       test:'KIA → NOETICA → Krative Core',
       response:result.response,
       intent:result.intent,
-      noetica:{success:result.noetica?.success,status:coreResult?.status,stage:coreResult?.stage},
+      noetica:{success:result.noetica?.success,status:noeticaResult?.status,stage:noeticaResult?.stage},
+      core:{status:coreResult?.status,stage:coreResult?.stage,kifStatus:coreResult?.kif?.status,kifSourceCount:coreResult?.kif?.sourceCount},
       context:result.context
     });
   }catch(error){
@@ -688,15 +692,16 @@ initDatabase()
           .then(()=>new Promise(resolve=>setTimeout(resolve,5000)))
           .then(()=>runKiaIntelligence('KIA startup integration test: explain in one sentence what Krative Core does.',session))
           .then(result=>{
-            const coreResult=result.noetica?.result;
-            const passed=Boolean(result.success&&result.response&&coreResult?.status==='completed');
+            const noeticaResult=result.noetica?.result;
+            const coreResult=noeticaResult?.core?.state;
+            const passed=Boolean(result.success&&result.response&&noeticaResult?.status==='completed'&&coreResult?.status==='completed'&&coreResult?.stage==='EXECUTION'&&coreResult?.kif?.status==='fused');
             console.log(JSON.stringify({
               type:'KIA_STARTUP_E2E',passed,
               noeticaSuccess:result.noetica?.success===true,
               coreStatus:coreResult?.status||null,
               coreStage:coreResult?.stage||null,
-              kifStatus:coreResult?.kif?.status||coreResult?.result?.kif?.status||null,
-              kifSourceCount:coreResult?.kif?.sourceCount||coreResult?.result?.kif?.sourceCount||null
+              kifStatus:coreResult?.kif?.status||null,
+              kifSourceCount:coreResult?.kif?.sourceCount||null
             }));
           })
           .catch(error=>console.error(JSON.stringify({type:'KIA_STARTUP_E2E',passed:false,error:error.message,detail:error.detail||null})));
