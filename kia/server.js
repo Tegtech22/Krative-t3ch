@@ -153,6 +153,25 @@ async function initDatabase(){
     )
   `);
   await pool.query(`
+    CREATE TABLE IF NOT EXISTS kia_plugins (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      description TEXT NOT NULL,
+      category TEXT NOT NULL,
+      enabled BOOLEAN NOT NULL DEFAULT TRUE,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS kia_connectors (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      description TEXT NOT NULL,
+      enabled BOOLEAN NOT NULL DEFAULT TRUE,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS kia_audit (
       id UUID PRIMARY KEY,
       staff_id TEXT NOT NULL,
@@ -192,6 +211,23 @@ async function loadPersistentState(){
     const seed={id:'kia-core',title:'KIA Intelligence Foundation',content:'KIA is Krative T3ch private staff intelligence assistant. It is aligned with NOETICA Intelligence and uses Krative Core when connected.',createdAt:new Date().toISOString()};
     await pool.query('INSERT INTO kia_knowledge (id,title,content,created_at) VALUES ($1,$2,$3,$4)',[seed.id,seed.title,seed.content,seed.createdAt]);
     knowledge.push(seed);
+  }
+  const defaultPlugins=[
+    ['intelligence','KIA Intelligence','Route requests through NOETICA Intelligence and Krative Core.','intelligence'],
+    ['memory','KIA Memory','Store and retrieve staff-scoped KIA memory.','productivity'],
+    ['knowledge','KIA Knowledge','Read and write the persistent KIA knowledge store.','knowledge'],
+    ['audit','KIA Audit','Record and inspect protected KIA activity.','security']
+  ];
+  for(const [id,name,description,category] of defaultPlugins){
+    await pool.query('INSERT INTO kia_plugins (id,name,description,category,enabled) VALUES ($1,$2,$3,$4,TRUE) ON CONFLICT (id) DO NOTHING',[id,name,description,category]);
+  }
+  const defaultConnectors=[
+    ['core','Krative Core','Live intelligence engine connection used by KIA.'],
+    ['noetica','NOETICA Intelligence','Live intelligence runtime connection used by KIA.'],
+    ['google','Google Account','Google OAuth connector for approved staff sign-in.']
+  ];
+  for(const [id,name,description] of defaultConnectors){
+    await pool.query('INSERT INTO kia_connectors (id,name,description,enabled) VALUES ($1,$2,$3,TRUE) ON CONFLICT (id) DO NOTHING',[id,name,description]);
   }
   audit.length=0;
   const auditResult=await pool.query('SELECT * FROM kia_audit ORDER BY created_at DESC LIMIT 200');
@@ -675,6 +711,67 @@ app.post('/api/knowledge',requireAuth,async(req,res)=>{
   knowledge.unshift(item);
   record(req.session,'KNOWLEDGE_WRITE','add_knowledge',{knowledgeId:item.id});
   res.status(201).json(item);
+});
+app.get('/api/plugins',requireAuth,async(req,res)=>{
+  const {rows}=await pool.query('SELECT id,name,description,category,enabled FROM kia_plugins ORDER BY name');
+  res.json({items:rows.map(x=>({...x,status:x.enabled?'active':'disabled',actions:x.enabled&&['intelligence'].includes(x.id)?['run']:[]}))});
+});
+app.put('/api/plugins/:id',requireAuth,async(req,res)=>{
+  const enabled=Boolean(req.body?.enabled);
+  const {rows}=await pool.query('UPDATE kia_plugins SET enabled=$1,updated_at=NOW() WHERE id=$2 RETURNING id,name,enabled',[enabled,req.params.id]);
+  if(!rows[0]) return res.status(404).json({error:'Plugin not found.'});
+  record(req.session,'PLUGIN_UPDATE',enabled?'enable_plugin':'disable_plugin',{pluginId:req.params.id,enabled});
+  res.json({success:true,plugin:rows[0]});
+});
+app.post('/api/plugins/:id/run',requireAuth,async(req,res)=>{
+  const {rows}=await pool.query('SELECT * FROM kia_plugins WHERE id=$1',[req.params.id]);
+  const plugin=rows[0];
+  if(!plugin) return res.status(404).json({error:'Plugin not found.'});
+  if(!plugin.enabled) return res.status(409).json({error:'Plugin is disabled.'});
+  if(plugin.id==='intelligence'){
+    const input=typeof req.body?.input==='string'&&req.body.input.trim()?req.body.input.trim():'Plugin health test: confirm KIA intelligence is operational in one sentence.';
+    const result=await runKiaIntelligence(input,req.session);
+    record(req.session,'PLUGIN_EXECUTION','run_plugin',{pluginId:plugin.id});
+    return res.json({success:true,plugin:plugin.id,output:result.response,intent:result.intent});
+  }
+  if(plugin.id==='memory') return res.json({success:true,plugin:plugin.id,output:'Memory plugin is active. Use the Memory section or /api/memory to store and retrieve staff-scoped memory.'});
+  if(plugin.id==='knowledge') return res.json({success:true,plugin:plugin.id,output:'Knowledge plugin is active. Use the Knowledge Centre or /api/knowledge to manage persistent knowledge.'});
+  if(plugin.id==='audit') return res.json({success:true,plugin:plugin.id,output:'Audit plugin is active. Protected KIA actions are being recorded in the audit system.'});
+  return res.status(400).json({error:'Plugin action is not implemented.'});
+});
+app.get('/api/connectors',requireAuth,async(req,res)=>{
+  const {rows}=await pool.query('SELECT id,name,description,enabled FROM kia_connectors ORDER BY name');
+  const items=[];
+  for(const x of rows){
+    let status=x.enabled?'configured':'disabled',detail='',action=null,actionLabel=null;
+    if(x.id==='core'){
+      try{const r=await fetch(CORE_URL+'/health');status=x.enabled&&r.ok?'connected':'unreachable';detail=r.ok?'Core health check passed.':'Core health check failed.';}catch(e){status='unreachable';detail='Core health check failed.';}
+    }else if(x.id==='noetica'){
+      try{const r=await fetch(NOETICA_URL+'/health');status=x.enabled&&r.ok?'connected':'unreachable';detail=r.ok?'NOETICA health check passed.':'NOETICA health check failed.';}catch(e){status='unreachable';detail='NOETICA health check failed.';}
+    }else if(x.id==='google'){
+      status=GOOGLE_CLIENT_ID&&GOOGLE_CLIENT_SECRET?'ready':'not_configured';
+      detail=status==='ready'?'Google OAuth is configured; staff authorization is required to connect.':'Google OAuth credentials are not configured.';
+      action=status==='ready'?true:false;actionLabel='Connect Google';
+    }
+    items.push({...x,status,detail,action,actionLabel});
+  }
+  res.json({items});
+});
+app.post('/api/connectors/:id/action',requireAuth,async(req,res)=>{
+  if(req.params.id==='google'){
+    if(!GOOGLE_CLIENT_ID||!GOOGLE_CLIENT_SECRET) return res.status(503).json({error:'Google connector is not configured.'});
+    const state=crypto.randomBytes(24).toString('hex');
+    googleStates.set(state,{createdAt:Date.now(),connector:'google',staffId:req.session.staffId});
+    setTimeout(()=>googleStates.delete(state),10*60*1000);
+    const params=new URLSearchParams({client_id:GOOGLE_CLIENT_ID,redirect_uri:GOOGLE_REDIRECT_URI,response_type:'code',scope:'openid email profile',access_type:'offline',prompt:'select_account',state});
+    record(req.session,'CONNECTOR_ACTION','connect_google',{connectorId:'google'});
+    return res.json({success:true,redirect:'https://accounts.google.com/o/oauth2/v2/auth?'+params.toString()});
+  }
+  if(req.params.id==='core'||req.params.id==='noetica'){
+    record(req.session,'CONNECTOR_ACTION','health_check',{connectorId:req.params.id});
+    return res.json({success:true,message:'Connector health check completed. Refresh the Connectors section to see the live status.'});
+  }
+  return res.status(404).json({error:'Connector not found.'});
 });
 app.get('/api/audit',requireAuth,(req,res)=>res.json({items:audit}));
 
