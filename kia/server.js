@@ -14,6 +14,15 @@ const E2E_TEST_TOKEN = process.env.KIA_E2E_TEST_TOKEN || '';
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '';
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || '';
 const GOOGLE_REDIRECT_URI = process.env.GOOGLE_REDIRECT_URI || 'https://kia-krative-intelligence-assistant.onrender.com/api/auth/google/callback';
+const GOOGLE_TOKEN_ENCRYPTION_KEY = process.env.KIA_GOOGLE_TOKEN_ENCRYPTION_KEY || '';
+const GOOGLE_SCOPES = [
+  'openid', 'email', 'profile',
+  'https://www.googleapis.com/auth/gmail.readonly',
+  'https://www.googleapis.com/auth/calendar.readonly',
+  'https://www.googleapis.com/auth/drive.metadata.readonly',
+  'https://www.googleapis.com/auth/meetings.space.readonly',
+  'https://www.googleapis.com/auth/meetings.space.created'
+];
 const googleStates = new Map();
 
 if (!DATABASE_URL) {
@@ -172,6 +181,17 @@ async function initDatabase(){
     )
   `);
   await pool.query(`
+    CREATE TABLE IF NOT EXISTS kia_google_connections (
+      staff_id TEXT PRIMARY KEY,
+      google_sub TEXT NOT NULL,
+      email TEXT NOT NULL,
+      refresh_token_enc TEXT NOT NULL,
+      granted_scopes TEXT NOT NULL DEFAULT '',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS kia_audit (
       id UUID PRIMARY KEY,
       staff_id TEXT NOT NULL,
@@ -266,6 +286,47 @@ app.get('/health',(req,res)=>res.json({
   signupEnabled:true
 }));
 
+function googleCryptoKey(){
+  if(!GOOGLE_TOKEN_ENCRYPTION_KEY) throw new Error('KIA_GOOGLE_TOKEN_ENCRYPTION_KEY is not configured.');
+  return crypto.createHash('sha256').update(GOOGLE_TOKEN_ENCRYPTION_KEY).digest();
+}
+function encryptGoogleToken(value){
+  const iv=crypto.randomBytes(12); const cipher=crypto.createCipheriv('aes-256-gcm',googleCryptoKey(),iv);
+  const encrypted=Buffer.concat([cipher.update(String(value),'utf8'),cipher.final()]);
+  return [iv.toString('base64url'),cipher.getAuthTag().toString('base64url'),encrypted.toString('base64url')].join('.');
+}
+function decryptGoogleToken(value){
+  const [ivRaw,tagRaw,dataRaw]=String(value||'').split('.');
+  if(!ivRaw||!tagRaw||!dataRaw) throw new Error('Invalid encrypted Google token.');
+  const decipher=crypto.createDecipheriv('aes-256-gcm',googleCryptoKey(),Buffer.from(ivRaw,'base64url'));
+  decipher.setAuthTag(Buffer.from(tagRaw,'base64url'));
+  return Buffer.concat([decipher.update(Buffer.from(dataRaw,'base64url')),decipher.final()]).toString('utf8');
+}
+async function saveGoogleConnection(staffId,googleSub,email,refreshToken,grantedScopes){
+  if(!refreshToken) throw new Error('Google did not return a refresh token. Re-authorize Google access with consent.');
+  const encrypted=encryptGoogleToken(refreshToken);
+  await pool.query(
+    `INSERT INTO kia_google_connections (staff_id,google_sub,email,refresh_token_enc,granted_scopes,created_at,updated_at)
+     VALUES ($1,$2,$3,$4,$5,NOW(),NOW())
+     ON CONFLICT (staff_id) DO UPDATE SET google_sub=EXCLUDED.google_sub,email=EXCLUDED.email,refresh_token_enc=EXCLUDED.refresh_token_enc,granted_scopes=EXCLUDED.granted_scopes,updated_at=NOW()`,
+    [staffId,googleSub,email,encrypted,String(grantedScopes||'')]
+  );
+}
+async function getGoogleConnection(staffId){
+  const {rows}=await pool.query('SELECT * FROM kia_google_connections WHERE staff_id=$1',[staffId]);
+  return rows[0]||null;
+}
+async function getGoogleAccessToken(staffId){
+  const connection=await getGoogleConnection(staffId);
+  if(!connection) throw Object.assign(new Error('Google is not connected for this KIA account.'),{statusCode:409});
+  const refreshToken=decryptGoogleToken(connection.refresh_token_enc);
+  const response=await fetch('https://oauth2.googleapis.com/token',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({client_id:GOOGLE_CLIENT_ID,client_secret:GOOGLE_CLIENT_SECRET,refresh_token:refreshToken,grant_type:'refresh_token'})});
+  const data=await response.json().catch(()=>({}));
+  if(!response.ok||!data.access_token) throw Object.assign(new Error(data.error_description||'Google access token refresh failed.'),{statusCode:502});
+  return {accessToken:data.access_token,connection};
+}
+function googleApiHeaders(accessToken){return {Authorization:'Bearer '+accessToken,Accept:'application/json'}}
+
 async function createGoogleSession(user,res){
   const t=token();
   const session={staffId:user.staffId,userId:user.id,role:user.role,createdAt:new Date().toISOString()};
@@ -285,8 +346,10 @@ app.get('/api/auth/google',(req,res)=>{
     client_id:GOOGLE_CLIENT_ID,
     redirect_uri:GOOGLE_REDIRECT_URI,
     response_type:'code',
-    scope:'openid email profile',
+    scope:GOOGLE_SCOPES.join(' '),
     access_type:'offline',
+    include_granted_scopes:'true',
+    prompt:'consent',
     prompt:'select_account',
     state
   });
@@ -320,6 +383,8 @@ app.get('/api/auth/google/callback',async(req,res)=>{
     const profile=await profileResponse.json();
     if(!profileResponse.ok||!profile.sub||!profile.email) throw new Error('Google did not return a usable account.');
     const email=String(profile.email).trim().toLowerCase();
+    const grantedScopes=String(tokenData.scope||GOOGLE_SCOPES.join(' '));
+    const stateConnector=entry.connector==='google';
     let user=[...users.values()].find(u=>u.email===email);
     if(!user){
       user={
@@ -341,6 +406,13 @@ app.get('/api/auth/google/callback',async(req,res)=>{
     }
     if(user.status!=='approved')
       return res.redirect('/?google_error='+encodeURIComponent(user.status==='pending'?'Your KIA account is pending administrator approval.':'Your KIA account is not approved.'));
+    if(stateConnector){
+      const refreshToken=tokenData.refresh_token;
+      const existing=await getGoogleConnection(user.staffId);
+      await saveGoogleConnection(user.staffId,String(profile.sub),email,refreshToken|| (existing?decryptGoogleToken(existing.refresh_token_enc):''),grantedScopes);
+      record({staffId:user.staffId},'CONNECTOR_ACTION','google_connected',{email,scopes:grantedScopes.split(' ').filter(Boolean)});
+      return res.redirect('/?google_connected=1');
+    }
     return createGoogleSession(user,res);
   }catch(error){
     console.error('Google sign-in failed:',error.message);
@@ -786,7 +858,30 @@ app.post('/api/plugins/:id/run',requireAuth,async(req,res)=>{
   if(plugin.id==='gemini'){
     const r=await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key='+encodeURIComponent(process.env.GEMINI_API_KEY),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({contents:[{parts:[{text:input}]}]})}); const d=await r.json().catch(()=>({})); if(!r.ok)return res.status(502).json({error:d.error?.message||'Gemini plugin request failed.'}); return res.json({success:true,plugin:plugin.id,output:d.candidates?.[0]?.content?.parts?.map(x=>x.text||'').join('')||'Gemini returned no text.'});
   }
-  if(['gmail','google-calendar','google-drive'].includes(plugin.id))return res.status(409).json({error:'Connect Google in the Connectors section before running this Google service plugin.'});
+  if(plugin.id==='gmail'){
+    try{
+      const {accessToken}=await getGoogleAccessToken(req.session.staffId);
+      const r=await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=10',{headers:googleApiHeaders(accessToken)});
+      const d=await r.json().catch(()=>({})); if(!r.ok)return res.status(502).json({error:d.error?.message||'Gmail API request failed.'});
+      return res.json({success:true,plugin:plugin.id,output:`Gmail connected. Found ${d.resultSizeEstimate||0} matching messages.`,messages:d.messages||[]});
+    }catch(error){return res.status(error.statusCode||502).json({error:error.message});}
+  }
+  if(plugin.id==='google-calendar'){
+    try{
+      const {accessToken}=await getGoogleAccessToken(req.session.staffId);
+      const r=await fetch('https://www.googleapis.com/calendar/v3/calendars/primary/events?maxResults=10&singleEvents=true&orderBy=startTime',{headers:googleApiHeaders(accessToken)});
+      const d=await r.json().catch(()=>({})); if(!r.ok)return res.status(502).json({error:d.error?.message||'Google Calendar API request failed.'});
+      return res.json({success:true,plugin:plugin.id,output:`Google Calendar connected. Found ${(d.items||[]).length} upcoming events.`,events:d.items||[]});
+    }catch(error){return res.status(error.statusCode||502).json({error:error.message});}
+  }
+  if(plugin.id==='google-drive'){
+    try{
+      const {accessToken}=await getGoogleAccessToken(req.session.staffId);
+      const r=await fetch("https://www.googleapis.com/drive/v3/files?pageSize=20&orderBy=modifiedTime%20desc&fields=files(id,name,mimeType,modifiedTime,webViewLink)",{headers:googleApiHeaders(accessToken)});
+      const d=await r.json().catch(()=>({})); if(!r.ok)return res.status(502).json({error:d.error?.message||'Google Drive API request failed.'});
+      return res.json({success:true,plugin:plugin.id,output:`Google Drive connected. Found ${(d.files||[]).length} recent files.`,files:d.files||[]});
+    }catch(error){return res.status(error.statusCode||502).json({error:error.message});}
+  }
   if(plugin.id==='slack')return res.status(409).json({error:'Slack plugin requires an authorized workspace token.'});
   if(plugin.id==='render')return res.status(409).json({error:'Render plugin requires an authorized Render API key.'});
   return res.status(400).json({error:'Plugin action is not implemented.'});
@@ -800,7 +895,7 @@ app.get('/api/connectors',requireAuth,async(req,res)=>{
       const check=await checkKiaDependency(CORE_URL+'/health',3,12000);status=x.enabled&&check.reachable?'connected':'unreachable';detail=check.reachable?'Core health check passed.':('Core health check failed: '+(check.error||'unreachable'));
     }else if(x.id==='noetica'){
       const check=await checkKiaDependency(NOETICA_URL+'/health',3,12000);status=x.enabled&&check.reachable?'connected':'unreachable';detail=check.reachable?'NOETICA health check passed.':('NOETICA health check failed: '+(check.error||'unreachable'));
-    }else if(x.id==='google'){status=GOOGLE_CLIENT_ID&&GOOGLE_CLIENT_SECRET?'ready':'not_configured';detail=status==='ready'?'Google OAuth is configured; staff authorization is required to connect.':'Google OAuth credentials are not configured.';action=status==='ready';actionLabel='Connect Google';
+    }else if(x.id==='google'){const connected=GOOGLE_CLIENT_ID&&GOOGLE_CLIENT_SECRET&&GOOGLE_TOKEN_ENCRYPTION_KEY?await getGoogleConnection(req.session.staffId):null;status=connected?'connected':(GOOGLE_CLIENT_ID&&GOOGLE_CLIENT_SECRET&&GOOGLE_TOKEN_ENCRYPTION_KEY?'ready':'not_configured');detail=connected?'Google account is authorized for Gmail, Calendar, Drive and Meet scopes.':status==='ready'?'Google OAuth is configured; staff authorization is required to connect.':'Google OAuth credentials or token encryption key are not configured.';action=status==='ready';actionLabel='Connect Google';
     }else if(x.id==='github'){status=process.env.GITHUB_TOKEN?'connected':'not_configured';detail=status==='connected'?'GitHub token is configured.':'Set GITHUB_TOKEN.';
     }else if(x.id==='supabase'){status=process.env.SUPABASE_URL&&process.env.SUPABASE_SERVICE_ROLE_KEY?'connected':'not_configured';detail=status==='connected'?'Supabase API is configured.':'Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.';
     }else if(x.id==='openai'){status=process.env.OPENAI_API_KEY?'connected':'not_configured';detail=status==='connected'?'OpenAI API is configured.':'Set OPENAI_API_KEY.';
@@ -815,11 +910,11 @@ app.get('/api/connectors',requireAuth,async(req,res)=>{
 });
 app.post('/api/connectors/:id/action',requireAuth,async(req,res)=>{
   if(req.params.id==='google'){
-    if(!GOOGLE_CLIENT_ID||!GOOGLE_CLIENT_SECRET) return res.status(503).json({error:'Google connector is not configured.'});
+    if(!GOOGLE_CLIENT_ID||!GOOGLE_CLIENT_SECRET||!GOOGLE_TOKEN_ENCRYPTION_KEY) return res.status(503).json({error:'Google connector is not fully configured. Set Google OAuth credentials and KIA_GOOGLE_TOKEN_ENCRYPTION_KEY.'});
     const state=crypto.randomBytes(24).toString('hex');
     googleStates.set(state,{createdAt:Date.now(),connector:'google',staffId:req.session.staffId});
     setTimeout(()=>googleStates.delete(state),10*60*1000);
-    const params=new URLSearchParams({client_id:GOOGLE_CLIENT_ID,redirect_uri:GOOGLE_REDIRECT_URI,response_type:'code',scope:'openid email profile',access_type:'offline',prompt:'select_account',state});
+    const params=new URLSearchParams({client_id:GOOGLE_CLIENT_ID,redirect_uri:GOOGLE_REDIRECT_URI,response_type:'code',scope:GOOGLE_SCOPES.join(' '),access_type:'offline',include_granted_scopes:'true',prompt:'consent',state});
     record(req.session,'CONNECTOR_ACTION','connect_google',{connectorId:'google'});
     return res.json({success:true,redirect:'https://accounts.google.com/o/oauth2/v2/auth?'+params.toString()});
   }
@@ -828,6 +923,15 @@ app.post('/api/connectors/:id/action',requireAuth,async(req,res)=>{
     return res.json({success:true,message:'Connector status check completed. Refresh the Connectors section to see the live status.'});
   }
   return res.status(404).json({error:'Connector not found.'});
+});
+app.get('/api/google/status',requireAuth,async(req,res)=>{
+  const connection=await getGoogleConnection(req.session.staffId);
+  res.json({configured:Boolean(GOOGLE_CLIENT_ID&&GOOGLE_CLIENT_SECRET&&GOOGLE_TOKEN_ENCRYPTION_KEY),connected:Boolean(connection),email:connection?.email||null,scopes:connection?.granted_scopes?connection.granted_scopes.split(' ').filter(Boolean):[]});
+});
+app.post('/api/google/disconnect',requireAuth,async(req,res)=>{
+  await pool.query('DELETE FROM kia_google_connections WHERE staff_id=$1',[req.session.staffId]);
+  record(req.session,'CONNECTOR_ACTION','google_disconnected',{connectorId:'google'});
+  res.json({success:true});
 });
 app.get('/api/audit',requireAuth,(req,res)=>res.json({items:audit}));
 
