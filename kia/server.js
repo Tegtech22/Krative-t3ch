@@ -346,10 +346,9 @@ app.get('/api/auth/google',(req,res)=>{
     client_id:GOOGLE_CLIENT_ID,
     redirect_uri:GOOGLE_REDIRECT_URI,
     response_type:'code',
-    scope:GOOGLE_SCOPES.join(' '),
-    access_type:'offline',
-    include_granted_scopes:'true',
-    prompt:'consent',
+    scope:'openid email profile',
+    access_type:'online',
+    prompt:'select_account',
     prompt:'select_account',
     state
   });
