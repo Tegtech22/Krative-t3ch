@@ -1,18 +1,17 @@
 {
-  "name": "kranova-api",
+  "name": "krative-klgi",
   "version": "0.1.1",
   "private": true,
-  "description": "Kranova backend API for the Krative T3ch ecosystem",
+  "description": "Krative LeadGen Intelligence service",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "test": "node --check server.js && node --check kia/server.js && node --check klgi/server.js"
+    "check": "node --check server.js"
   },
   "engines": {
     "node": ">=24"
   },
   "dependencies": {
-    "cors": "2.8.5",
     "express": "5.1.0",
     "pg": "8.16.3"
   }

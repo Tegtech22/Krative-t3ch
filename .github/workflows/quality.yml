@@ -1,0 +1,51 @@
+name: Krative T3ch Quality Gate
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  syntax-and-install:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service:
+          - root
+          - kia
+          - klgi
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            package.json
+            kia/package.json
+            klgi/package.json
+      - name: Install root dependencies
+        if: matrix.service == 'root'
+        run: npm install --ignore-scripts
+      - name: Check root
+        if: matrix.service == 'root'
+        run: npm test
+      - name: Install KIA dependencies
+        if: matrix.service == 'kia'
+        working-directory: kia
+        run: npm install --ignore-scripts
+      - name: Check KIA
+        if: matrix.service == 'kia'
+        working-directory: kia
+        run: npm run check
+      - name: Install KLGI dependencies
+        if: matrix.service == 'klgi'
+        working-directory: klgi
+        run: npm install --ignore-scripts
+      - name: Check KLGI
+        if: matrix.service == 'klgi'
+        working-directory: klgi
+        run: npm run check

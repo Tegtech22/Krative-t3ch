@@ -146,7 +146,7 @@ document.querySelectorAll('[data-go]').forEach(b=>b.onclick=async()=>{
 document.getElementById('theme').onclick=()=>document.body.classList.toggle('light');
 document.querySelectorAll('#oppTabs button').forEach(b=>b.onclick=()=>{document.querySelectorAll('#oppTabs button').forEach(x=>x.classList.remove('active'));b.classList.add('active');renderOpp(b.dataset.filter)});
 renderOpp();
-const API_BASE="https://kranova-api.onrender.com";
+const API_BASE=window.KRANOVA_API_BASE||"";
 let authMode="login";
 let authToken=localStorage.getItem("kranova_token")||"";
 let intelligenceThreadId=null;

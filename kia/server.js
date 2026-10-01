@@ -349,7 +349,6 @@ app.get('/api/auth/google',(req,res)=>{
     scope:'openid email profile',
     access_type:'online',
     prompt:'select_account',
-    prompt:'select_account',
     state
   });
   res.redirect('https://accounts.google.com/o/oauth2/v2/auth?'+params.toString());
