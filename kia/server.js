@@ -677,20 +677,46 @@ async function runKiaIntelligence(input, session){
       r=await fetch(NOETICA_URL+'/api/v1/intelligence',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+NOETICA_API_KEY},body:JSON.stringify({input,context:{...coreContext,memoryKey:session.staffId}}),...(controller?{signal:controller.signal}:{})});
     }catch(error){
       if(attempt<maxRetries-1){await new Promise(resolve=>setTimeout(resolve,2000*(attempt+1)));continue;}
-      throw Object.assign(new Error(error?.name==='AbortError'?'NOETICA request timed out after '+timeoutMs+'ms.':'Unable to connect to NOETICA.'),{statusCode:error?.name==='AbortError'?504:502,detail:error?.message||'NOETICA connection failed.'});
+      const timedOut=error?.name==='AbortError';
+      throw Object.assign(
+        new Error(timedOut?'NOETICA request timed out after '+timeoutMs+'ms.':'Unable to connect to NOETICA.'),
+        {
+          statusCode:timedOut?504:502,
+          detail:error?.message||'NOETICA connection failed.',
+          code:timedOut?'NOETICA_TIMEOUT':'NOETICA_UNREACHABLE',
+          dependency:'noetica',
+          stage:'kia-to-noetica',
+          retryable:true
+        }
+      );
     }finally{if(timeoutHandle)clearTimeout(timeoutHandle);}
     const raw=await r.text();
     if(raw.trim()){try{data=JSON.parse(raw);}catch{
       if([429,502,503,504].includes(r.status)&&attempt<maxRetries-1){await new Promise(resolve=>setTimeout(resolve,1500*(attempt+1)));continue;}
-      throw Object.assign(new Error('Invalid NOETICA response.'),{statusCode:502,detail:'NOETICA returned non-JSON HTTP '+r.status+' content-type='+(r.headers.get('content-type')||'unknown')+'.'});
+      throw Object.assign(new Error('Invalid NOETICA response.'),{
+        statusCode:502,
+        detail:'NOETICA returned non-JSON HTTP '+r.status+' content-type='+(r.headers.get('content-type')||'unknown')+'.',
+        code:'NOETICA_INVALID_RESPONSE',
+        dependency:'noetica',
+        stage:'kia-to-noetica',
+        retryable:[429,502,503,504].includes(r.status)
+      });
     }}
     if([429,502,503,504].includes(r.status)&&attempt<maxRetries-1){await new Promise(resolve=>setTimeout(resolve,1500*(attempt+1)));continue;}
     break;
   }
   if(!r?.ok){
     record(session,'INTELLIGENCE_ERROR','noetica_response_error',{status:r?.status||0});
-    const message=data?.error||data?.result?.response?.message||'NOETICA request failed.';
-    throw Object.assign(new Error(message),{statusCode:502,detail:data?.error||message,retryable:[429,502,503,504].includes(r?.status),dependency:'noetica'});
+    const message=data?.error||data?.message||data?.result?.response?.message||'NOETICA request failed.';
+    const statusCode=r?.status||502;
+    throw Object.assign(new Error(message),{
+      statusCode,
+      detail:data?.error||data?.message||data?.result?.response?.message||r?.statusText||'NOETICA request failed.',
+      code:data?.code||('NOETICA_HTTP_'+statusCode),
+      retryable:[429,502,503,504].includes(statusCode),
+      dependency:'noetica',
+      stage:'kia-to-noetica'
+    });
   }
 
   const response=buildKiaResponse(data);
@@ -758,7 +784,15 @@ app.post('/api/chat',requireAuth,async(req,res)=>{
     return res.json(result);
   }catch(error){
     const status=error.statusCode||502;
-    return res.status(status).json({error:status===502?'NOETICA/Core intelligence request failed.':error.message,intent:input?classifyInput(input):undefined,detail:error.detail});
+    return res.status(status).json({
+      error:status===502?'NOETICA/Core intelligence request failed.':error.message,
+      intent:input?classifyInput(input):undefined,
+      detail:error.detail||error.message,
+      code:error.code||'INTELLIGENCE_REQUEST_FAILED',
+      dependency:error.dependency||'unknown',
+      stage:error.stage||'unknown',
+      retryable:Boolean(error.retryable)
+    });
   }
 });
 
