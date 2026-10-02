@@ -631,8 +631,11 @@ async function checkKiaDependency(url, retries=3, timeoutMs=15000){
     const timer=setTimeout(()=>controller.abort(),timeoutMs);
     try{
       const response=await fetch(url,{signal:controller.signal});
-      if(response.ok) return {reachable:true,status:response.status};
-      lastError=new Error('HTTP '+response.status);
+      // A health endpoint returning any HTTP response proves the service is
+      // reachable. Do not treat transient 429/5xx responses as a network
+      // outage; the actual intelligence request below will determine whether
+      // the dependency can process the request.
+      return {reachable:true,status:response.status};
     }catch(error){lastError=error;}
     finally{clearTimeout(timer);}
     if(attempt<retries-1) await new Promise(resolve=>setTimeout(resolve,1500*(attempt+1)));
@@ -662,8 +665,8 @@ async function runKiaIntelligence(input, session){
 
   if(!NOETICA_API_KEY) throw Object.assign(new Error('NOETICA API key is not configured on KIA.'),{statusCode:503});
   const warm=await warmKiaIntelligenceDependencies();
-  if(!warm.core.reachable) throw Object.assign(new Error('Krative Core is temporarily unreachable. NOETICA cannot complete the intelligence process until Core is ready.'),{statusCode:502,detail:warm.core.error||'Krative Core health check failed.',retryable:true,dependency:'krative-core'});
-  if(!warm.noetica.reachable) throw Object.assign(new Error('NOETICA is temporarily unreachable.'),{statusCode:502,detail:warm.noetica.error||'NOETICA health check failed.',retryable:true,dependency:'noetica'});
+  if(!warm.core.reachable) throw Object.assign(new Error('Krative Core is temporarily unreachable.'),{statusCode:502,detail:warm.core.error||'Unable to reach Krative Core health endpoint.',retryable:true,dependency:'krative-core'});
+  if(!warm.noetica.reachable) throw Object.assign(new Error('NOETICA is temporarily unreachable.'),{statusCode:502,detail:warm.noetica.error||'Unable to reach NOETICA health endpoint.',retryable:true,dependency:'noetica'});
   let r,data={};
   const maxRetries=4;
   const timeoutMs=Number(process.env.NOETICA_TIMEOUT_MS||45000);
