@@ -624,26 +624,54 @@ function buildKiaResponse(data){
   return JSON.stringify(result,null,2);
 }
 
-async function checkKiaDependency(url, retries=3, timeoutMs=15000){
+async function checkKiaDependency(url,retries=3,timeoutMs=15000){
   let lastError=null;
   for(let attempt=0;attempt<retries;attempt++){
     const controller=new AbortController();
     const timer=setTimeout(()=>controller.abort(),timeoutMs);
     try{
-      const response=await fetch(url,{signal:controller.signal});
-      // A health endpoint returning any HTTP response proves the service is
-      // reachable. Do not treat transient 429/5xx responses as a network
-      // outage; the actual intelligence request below will determine whether
-      // the dependency can process the request.
-      return {reachable:true,status:response.status};
-    }catch(error){lastError=error;}
-    finally{clearTimeout(timer);}
+      const response=await fetch(url,{signal:controller.signal,headers:{Accept:'application/json'}});
+      const contentType=(response.headers.get('content-type')||'').toLowerCase();
+      const raw=await response.text();
+      let payload=null;
+      if(raw.trim() && contentType.includes('application/json')){
+        try{payload=JSON.parse(raw);}catch(error){lastError=new Error('Invalid JSON from dependency health endpoint.');}
+      }else if(raw.trim()){
+        lastError=new Error('Dependency health returned non-JSON HTTP '+response.status+' content-type='+contentType+'.');
+      }
+
+      if(payload && typeof payload==='object'){
+        const serviceOk=payload.status==='ok';
+        const liveOk=payload.live===true;
+        const reachable=Boolean(serviceOk||liveOk);
+        return {
+          reachable,
+          status:response.status,
+          contentType,
+          payload,
+          error:reachable?null:(payload.error||payload.code||'Dependency health is degraded.')
+        };
+      }
+
+      if(response.status>=200 && response.status<300 && !raw.trim()){
+        lastError=new Error('Dependency health returned an empty response.');
+      }else if(response.status>=500 && attempt<retries-1){
+        lastError=new Error('Dependency health returned HTTP '+response.status+'.');
+      }else{
+        lastError=lastError||new Error('Dependency health returned HTTP '+response.status+'.');
+      }
+    }catch(error){
+      lastError=error;
+    }finally{clearTimeout(timer);}
     if(attempt<retries-1) await new Promise(resolve=>setTimeout(resolve,1500*(attempt+1)));
   }
   return {reachable:false,error:lastError?.message||'unreachable'};
 }
 async function warmKiaIntelligenceDependencies(){
-  const results=await Promise.all([checkKiaDependency(CORE_URL+'/health',3,12000),checkKiaDependency(NOETICA_URL+'/health',3,12000)]);
+  const results=await Promise.all([
+    checkKiaDependency(CORE_URL+'/health',3,12000),
+    checkKiaDependency(NOETICA_URL+'/health',3,12000)
+  ]);
   return {core:results[0],noetica:results[1]};
 }
 async function runKiaIntelligence(input, session){
@@ -665,8 +693,8 @@ async function runKiaIntelligence(input, session){
 
   if(!NOETICA_API_KEY) throw Object.assign(new Error('NOETICA API key is not configured on KIA.'),{statusCode:503});
   const warm=await warmKiaIntelligenceDependencies();
-  if(!warm.core.reachable) throw Object.assign(new Error('Krative Core is temporarily unreachable.'),{statusCode:502,detail:warm.core.error||'Unable to reach Krative Core health endpoint.',retryable:true,dependency:'krative-core'});
-  if(!warm.noetica.reachable) throw Object.assign(new Error('NOETICA is temporarily unreachable.'),{statusCode:502,detail:warm.noetica.error||'Unable to reach NOETICA health endpoint.',retryable:true,dependency:'noetica'});
+  if(!warm.core.reachable) throw Object.assign(new Error('Krative Core is temporarily unavailable.'),{statusCode:502,detail:warm.core.error||'Krative Core health check did not return a healthy JSON response.',code:'CORE_HEALTH_UNAVAILABLE',retryable:true,dependency:'krative-core',stage:'kia-dependency-health'});
+  if(!warm.noetica.reachable) throw Object.assign(new Error('NOETICA is temporarily unavailable.'),{statusCode:502,detail:warm.noetica.error||'NOETICA health check did not return a healthy JSON response.',code:'NOETICA_HEALTH_UNAVAILABLE',retryable:true,dependency:'noetica',stage:'kia-dependency-health'});
   let r,data={};
   const maxRetries=4;
   const timeoutMs=Number(process.env.NOETICA_TIMEOUT_MS||45000);
