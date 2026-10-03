@@ -30,12 +30,14 @@ if (!DATABASE_URL) {
 }
 
 const { Pool } = require('pg');
+const { PDFParse } = require('pdf-parse');
+const mammoth = require('mammoth');
 const pool = new Pool({
   connectionString: DATABASE_URL,
   ssl: { rejectUnauthorized: false }
 });
 
-app.use(express.json({limit:'5mb'}));
+app.use(express.json({limit:'15mb'}));
 app.use(express.static(path.join(__dirname,'public')));
 
 const sessions = new Map();
@@ -843,7 +845,28 @@ app.post('/api/documents',requireAuth,async(req,res)=>{
   const title=typeof req.body?.title==='string'&&req.body.title.trim()?req.body.title.trim().slice(0,200):'Untitled document';
   const mimeType=typeof req.body?.mimeType==='string'?req.body.mimeType.slice(0,120):'text/plain';
   const raw=typeof req.body?.content==='string'?req.body.content:'';
-  const content=normalizeDocumentText(raw);
+  const encoded=typeof req.body?.data==='string'?req.body.data:'';
+  let content=normalizeDocumentText(raw);
+  if(!content && encoded){
+    let buffer;
+    try{ buffer=Buffer.from(encoded,'base64'); }catch(error){ return res.status(400).json({error:'Invalid document encoding.',code:'DOCUMENT_ENCODING_INVALID'}); }
+    if(buffer.length>10*1024*1024) return res.status(413).json({error:'Document is too large. Maximum size is 10 MB.',code:'DOCUMENT_TOO_LARGE'});
+    try{
+      if(mimeType==='application/pdf' || /\\.pdf$/i.test(title)){
+        const parser=new PDFParse({data:buffer});
+        const result=await parser.getText();
+        content=normalizeDocumentText(result.text);
+        await parser.destroy();
+      }else if(mimeType==='application/vnd.openxmlformats-officedocument.wordprocessingml.document' || /\\.docx$/i.test(title)){
+        const result=await mammoth.extractRawText({buffer});
+        content=normalizeDocumentText(result.value);
+      }else{
+        content=normalizeDocumentText(buffer.toString('utf8'));
+      }
+    }catch(error){
+      return res.status(422).json({error:'Could not extract readable text from this document.',code:'DOCUMENT_EXTRACTION_FAILED',detail:error.message});
+    }
+  }
   if(!content) return res.status(400).json({error:'Document content is required.',code:'DOCUMENT_CONTENT_REQUIRED'});
   if(content.length<20) return res.status(400).json({error:'Document content is too short.',code:'DOCUMENT_TOO_SHORT'});
   const id=crypto.randomUUID();
