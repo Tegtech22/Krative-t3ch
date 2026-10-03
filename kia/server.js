@@ -692,9 +692,9 @@ async function runKiaIntelligence(input, session){
   };
 
   if(!NOETICA_API_KEY) throw Object.assign(new Error('NOETICA API key is not configured on KIA.'),{statusCode:503});
-  const warm=await warmKiaIntelligenceDependencies();
-  if(!warm.core.reachable) throw Object.assign(new Error('Krative Core is temporarily unavailable.'),{statusCode:502,detail:warm.core.error||'Krative Core health check did not return a healthy JSON response.',code:'CORE_HEALTH_UNAVAILABLE',retryable:true,dependency:'krative-core',stage:'kia-dependency-health'});
-  if(!warm.noetica.reachable) throw Object.assign(new Error('NOETICA is temporarily unavailable.'),{statusCode:502,detail:warm.noetica.error||'NOETICA health check did not return a healthy JSON response.',code:'NOETICA_HEALTH_UNAVAILABLE',retryable:true,dependency:'noetica',stage:'kia-dependency-health'});
+  // Do not gate intelligence on dependency health probes. Render may cold-start NOETICA/Core,
+  // and a health probe can fail at the edge before the service is ready. The actual intelligence
+  // request below has bounded timeouts and retries and is the authoritative functional check.
   let r,data={};
   const maxRetries=4;
   const timeoutMs=Number(process.env.NOETICA_TIMEOUT_MS||45000);
