@@ -696,7 +696,7 @@ async function runKiaIntelligence(input, session){
   // and a health probe can fail at the edge before the service is ready. The actual intelligence
   // request below has bounded timeouts and retries and is the authoritative functional check.
   let r,data={};
-  const maxRetries=4;
+  const maxRetries=6;
   const timeoutMs=Number(process.env.NOETICA_TIMEOUT_MS||45000);
   for(let attempt=0;attempt<maxRetries;attempt++){
     const controller=typeof AbortController==='function'?new AbortController():null;
