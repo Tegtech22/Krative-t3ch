@@ -595,7 +595,7 @@ function retrieveContext(staffId,input){
     ? staffMemories.slice(0,5).map(x=>({...x,_score:1}))
     : staffMemories.map(x=>({...x,_score:score(x.content)})).filter(x=>x._score>0).sort((a,b)=>b._score-a._score).slice(0,5);
   const knowledgeHits=knowledge.map(x=>({...x,_score:score(x.title+' '+x.content)})).filter(x=>x._score>0).sort((a,b)=>b._score-a._score).slice(0,5);
-  const companyQuery=/\\b(krative|krative t3ch|our company|our products|our architecture|our system|our brand|noetica|krative core|kif|uis|hin|klgi)\\b/i.test(normalized);
+  const companyQuery=/\b(krative|krative t3ch|our company|our products|our architecture|our system|our brand|noetica|krative core|kif|uis|hin|klgi)\b/i.test(normalized);
   const master=knowledge.find(x=>x.id==='krative-t3ch-master');
   if(companyQuery && master && !knowledgeHits.some(x=>x.id===master.id)){
     knowledgeHits.unshift({...master,_score:999});
