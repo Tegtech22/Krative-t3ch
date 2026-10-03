@@ -669,8 +669,8 @@ async function checkKiaDependency(url,retries=3,timeoutMs=15000){
 }
 async function warmKiaIntelligenceDependencies(){
   const results=await Promise.all([
-    checkKiaDependency(CORE_URL+'/health',3,12000),
-    checkKiaDependency(NOETICA_URL+'/health',3,12000)
+    checkKiaDependency(CORE_URL+'/health/live',2,8000),
+    checkKiaDependency(NOETICA_URL+'/health/live',2,8000)
   ]);
   return {core:results[0],noetica:results[1]};
 }
