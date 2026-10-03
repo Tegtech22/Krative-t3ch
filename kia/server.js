@@ -30,12 +30,14 @@ if (!DATABASE_URL) {
 }
 
 const { Pool } = require('pg');
+const { PDFParse } = require('pdf-parse');
+const mammoth = require('mammoth');
 const pool = new Pool({
   connectionString: DATABASE_URL,
   ssl: { rejectUnauthorized: false }
 });
 
-app.use(express.json({limit:'1mb'}));
+app.use(express.json({limit:'15mb'}));
 app.use(express.static(path.join(__dirname,'public')));
 
 const sessions = new Map();
@@ -162,6 +164,17 @@ async function initDatabase(){
     )
   `);
   await pool.query(`
+    CREATE TABLE IF NOT EXISTS kia_documents (
+      id UUID PRIMARY KEY,
+      staff_id TEXT NOT NULL,
+      title TEXT NOT NULL,
+      mime_type TEXT NOT NULL,
+      size_bytes INTEGER NOT NULL DEFAULT 0,
+      content TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS kia_plugins (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
@@ -227,6 +240,8 @@ async function loadPersistentState(){
   knowledge.length=0;
   const knowledgeResult=await pool.query('SELECT * FROM kia_knowledge ORDER BY created_at DESC');
   for(const k of knowledgeResult.rows) knowledge.push({id:k.id,title:k.title,content:k.content,createdAt:k.created_at.toISOString()});
+  const documentResult=await pool.query('SELECT * FROM kia_documents ORDER BY created_at DESC LIMIT 200');
+  for(const d of documentResult.rows) knowledge.push({id:'document:'+d.id,type:'document',staffId:d.staff_id,scope:'private',title:d.title,content:d.content,createdAt:d.created_at.toISOString()});
   const masterKnowledge=require('./knowledge/krativeT3chMaster');
   const masterCreatedAt=new Date().toISOString();
   await pool.query(
@@ -585,6 +600,19 @@ function classifyInput(input){
   if(/\b(create|write|draft|design|generate)\b/.test(text)) return 'creation';
   return 'conversation';
 }
+function normalizeDocumentText(value){
+  return String(value||'').replace(/\\r\\n/g,'\\n').replace(/[\\t ]+/g,' ').replace(/\\n{3,}/g,'\\n\\n').trim().slice(0,150000);
+}
+function documentSearch(staffId,input){
+  const terms=String(input||'').toLowerCase().split(/\\W+/).filter(x=>x.length>3).slice(0,12);
+  return knowledge
+    .filter(x=>x.type==='document' && (x.staffId===staffId || x.scope==='shared'))
+    .map(x=>({x,score:terms.reduce((n,t)=>n+(x.content.toLowerCase().includes(t)?1:0),0)}))
+    .filter(x=>x.score>0)
+    .sort((a,b)=>b.score-a.score)
+    .slice(0,5)
+    .map(x=>x.x);
+}
 function retrieveContext(staffId,input){
   const normalized=String(input||'').toLowerCase().trim();
   const explicitMemoryRecall=/\b(what did i ask you to remember|what do you remember|what have you remembered|show me what you remember|recall what i asked you to remember)\b/.test(normalized);
@@ -693,6 +721,10 @@ async function runKiaIntelligence(input, session){
 
   const intent=classifyInput(input);
   const context=retrieveContext(session.staffId,input);
+  const documentMatches=documentSearch(session.staffId,input);
+  if(documentMatches.length){
+    context.knowledge=[...documentMatches,...context.knowledge].slice(0,8);
+  }
   record(session,'INTELLIGENCE_REQUEST','understand_input',{length:input.length,intent});
   record(session,'INTELLIGENCE_ROUTE','route_request',{route:'noetica',intent,memoryMatches:context.memories.length,knowledgeMatches:context.knowledge.length});
 
@@ -808,6 +840,45 @@ async function runConfiguredPluginSmokeTests(){
   });
   console.log(JSON.stringify({type:'KIA_PLUGIN_SMOKE_TEST',tests,skipped:['gmail','google-calendar','google-drive'],note:'Google services require OAuth authorization.'}));
 }
+
+app.post('/api/documents',requireAuth,async(req,res)=>{
+  const title=typeof req.body?.title==='string'&&req.body.title.trim()?req.body.title.trim().slice(0,200):'Untitled document';
+  const mimeType=typeof req.body?.mimeType==='string'?req.body.mimeType.slice(0,120):'text/plain';
+  const raw=typeof req.body?.content==='string'?req.body.content:'';
+  const encoded=typeof req.body?.data==='string'?req.body.data:'';
+  let content=normalizeDocumentText(raw);
+  if(!content && encoded){
+    let buffer;
+    try{ buffer=Buffer.from(encoded,'base64'); }catch(error){ return res.status(400).json({error:'Invalid document encoding.',code:'DOCUMENT_ENCODING_INVALID'}); }
+    if(buffer.length>10*1024*1024) return res.status(413).json({error:'Document is too large. Maximum size is 10 MB.',code:'DOCUMENT_TOO_LARGE'});
+    try{
+      if(mimeType==='application/pdf' || /\\.pdf$/i.test(title)){
+        const parser=new PDFParse({data:buffer});
+        const result=await parser.getText();
+        content=normalizeDocumentText(result.text);
+        await parser.destroy();
+      }else if(mimeType==='application/vnd.openxmlformats-officedocument.wordprocessingml.document' || /\\.docx$/i.test(title)){
+        const result=await mammoth.extractRawText({buffer});
+        content=normalizeDocumentText(result.value);
+      }else{
+        content=normalizeDocumentText(buffer.toString('utf8'));
+      }
+    }catch(error){
+      return res.status(422).json({error:'Could not extract readable text from this document.',code:'DOCUMENT_EXTRACTION_FAILED',detail:error.message});
+    }
+  }
+  if(!content) return res.status(400).json({error:'Document content is required.',code:'DOCUMENT_CONTENT_REQUIRED'});
+  if(content.length<20) return res.status(400).json({error:'Document content is too short.',code:'DOCUMENT_TOO_SHORT'});
+  const id=crypto.randomUUID();
+  const item={id,staffId:req.session.staffId,title,mimeType,sizeBytes:Buffer.byteLength(content,'utf8'),content,createdAt:new Date().toISOString()};
+  await pool.query(
+    'INSERT INTO kia_documents (id,staff_id,title,mime_type,size_bytes,content,created_at) VALUES ($1,$2,$3,$4,$5,$6,$7)',
+    [id,item.staffId,item.title,item.mimeType,item.sizeBytes,item.content,item.createdAt]
+  );
+  knowledge.push({id:'document:'+id,type:'document',staffId:item.staffId,scope:'private',title:item.title,content:item.content,createdAt:item.createdAt});
+  record(req.session,'DOCUMENT_INGEST','store_document',{documentId:id,title:item.title,mimeType:item.mimeType,sizeBytes:item.sizeBytes});
+  res.json({success:true,document:{id,title:item.title,mimeType:item.mimeType,sizeBytes:item.sizeBytes,createdAt:item.createdAt}});
+});
 
 app.post('/api/chat',requireAuth,async(req,res)=>{
   const input=typeof(req.body&&req.body.input)==='string'?req.body.input.trim():'';
