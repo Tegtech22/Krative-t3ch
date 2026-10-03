@@ -635,9 +635,30 @@ function retrieveContext(staffId,input){
   }
   return {memories,knowledge:knowledgeHits.slice(0,6)};
 }
-function buildKiaResponse(data){
+function isCleanKiaAnswer(value,input){
+  const text=typeof value==='string'?value.trim():'';
+  if(!text) return false;
+
+  const prompt=String(input||'');
+  const oneSentence=/\bone sentence\b/i.test(prompt);
+
+  // Never surface a retrieved knowledge document as the final answer.
+  if(text.length>5000) return false;
+  if(/^\s*#{1,6}\s/m.test(text) || /^\s*[-*]\s/m.test(text)) return false;
+  if(/\bthis is the authoritative company knowledge source for kia\b/i.test(text)) return false;
+
+  if(oneSentence){
+    if(text.length>600) return false;
+    const sentences=text.split(/[.!?]+(?:\s|$)/).map(x=>x.trim()).filter(Boolean);
+    if(sentences.length>2) return false;
+  }
+
+  return true;
+}
+
+function buildKiaResponse(data,input=''){
   const result=data&&data.result!==undefined?data.result:data;
-  if(typeof result==='string') return result;
+  if(typeof result==='string') return result.trim();
   if(!result) return 'I received no usable intelligence result.';
 
   const response =
@@ -652,22 +673,27 @@ function buildKiaResponse(data){
       ? result.intelligence
       : null;
 
-  const candidates=[
-    result.answer,
-    result.output,
-    result.message,
-    result.text,
-    result.content,
+  // NOETICA's structured response is authoritative. Prefer its message
+  // before generic fields that may contain raw Core/context payloads.
+  const preferred=[
     response?.message,
     response?.answer,
     response?.content,
-    intelligence?.answer
+    result.answer,
+    intelligence?.answer,
+    result.output,
+    result.message,
+    result.text,
+    result.content
   ];
 
-  const text=candidates.find(x=>typeof x==='string'&&x.trim());
-  if(text) return text;
+  const clean=preferred.find(x=>isCleanKiaAnswer(x,input));
+  if(clean) return clean.trim();
 
-  return JSON.stringify(result,null,2);
+  const fallback=preferred.find(x=>typeof x==='string'&&x.trim());
+  if(fallback) return fallback.trim();
+
+  return 'I received no usable intelligence result.';
 }
 
 async function checkKiaDependency(url,retries=3,timeoutMs=15000){
@@ -798,7 +824,7 @@ async function runKiaIntelligence(input, session){
     });
   }
 
-  const response=buildKiaResponse(data);
+  const response=buildKiaResponse(data,input);
   record(session,'INTELLIGENCE_RESPONSE','noetica_response',{
     status:r.status,intent,
     usedMemory:context.memories.length,
@@ -926,9 +952,24 @@ app.post('/api/test/e2e',async(req,res)=>{
     const result=await runKiaIntelligence(input,session);
     const noeticaResult=result.noetica?.result;
     const coreResult=noeticaResult?.core?.state;
+    const responseText=String(result.response||'').trim();
+    const requestedOneSentence=/\bone sentence\b/i.test(input);
+    const sentenceCount=responseText
+      .split(/[.!?]+(?:\s|$)/)
+      .map(x=>x.trim())
+      .filter(Boolean)
+      .length;
+    const responseQuality=Boolean(
+      responseText &&
+      responseText.length<=600 &&
+      !/^\s*#{1,6}\s/m.test(responseText) &&
+      !/^\s*[-*]\s/m.test(responseText) &&
+      !/\bthis is the authoritative company knowledge source for kia\b/i.test(responseText) &&
+      (!requestedOneSentence || sentenceCount<=2)
+    );
     const passed=Boolean(
       result.success &&
-      result.response &&
+      responseQuality &&
       noeticaResult?.status==='completed' &&
       coreResult?.status==='completed' &&
       coreResult?.stage==='EXECUTION' &&
