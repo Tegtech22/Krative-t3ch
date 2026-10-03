@@ -577,13 +577,23 @@ function extractMemoryRequest(input){
 }
 
 function classifyInput(input){
-  const text=input.toLowerCase();
-  if(/\b(what|who|when|where|which|how|why)\b/.test(text)) return 'question';
-  if(/\b(plan|roadmap|strategy|steps|build|develop|implement)\b/.test(text)) return 'planning';
+  const text=String(input||'').toLowerCase();
+  if(/\b(code|debug|bug|error|function|api|javascript|python|sql|repository|github|render|supabase)\b/.test(text)) return 'coding';
+  if(/\b(search|latest|today|current|recent|news|price|weather|look up|research)\b/.test(text)) return 'research';
+  if(/\b(write|rewrite|draft|edit|proofread|caption|email|letter|script|story|essay)\b/.test(text)) return 'creation';
   if(/\b(compare|versus|vs|difference|evaluate|assess)\b/.test(text)) return 'analysis';
   if(/\b(decide|decision|should we|recommend|choose)\b/.test(text)) return 'decision_support';
-  if(/\b(create|write|draft|design|generate)\b/.test(text)) return 'creation';
+  if(/\b(plan|roadmap|strategy|steps|build|develop|implement)\b/.test(text)) return 'planning';
+  if(/\b(explain|what|who|when|where|which|how|why)\b/.test(text)) return 'question';
   return 'conversation';
+}
+
+function normalizeConversation(conversation){
+  if(!Array.isArray(conversation)) return [];
+  return conversation
+    .filter(x=>x && (x.role==='user'||x.role==='kia') && typeof x.text==='string' && x.text.trim())
+    .slice(-20)
+    .map(x=>({role:x.role,text:x.text.trim().slice(0,8000)}));
 }
 function retrieveContext(staffId,input){
   const normalized=String(input||'').toLowerCase().trim();
@@ -687,19 +697,22 @@ async function warmKiaIntelligenceDependencies(){
   ]);
   return {core:results[0],noetica:results[1]};
 }
-async function runKiaIntelligence(input, session){
+async function runKiaIntelligence(input, session, conversation=[]){
   if(!input) throw Object.assign(new Error('Input is required.'),{statusCode:400});
+  const recentConversation=normalizeConversation(conversation);
   if(!CORE_API_KEY) throw Object.assign(new Error('Krative Core API key is not configured on KIA.'),{statusCode:503});
 
   const intent=classifyInput(input);
   const context=retrieveContext(session.staffId,input);
+  const conversationContext=recentConversation.slice(-20);
   record(session,'INTELLIGENCE_REQUEST','understand_input',{length:input.length,intent});
-  record(session,'INTELLIGENCE_ROUTE','route_request',{route:'noetica',intent,memoryMatches:context.memories.length,knowledgeMatches:context.knowledge.length});
+  record(session,'INTELLIGENCE_ROUTE','route_request',{route:'noetica',intent,memoryMatches:context.memories.length,knowledgeMatches:context.knowledge.length,conversationTurns:conversationContext.length});
 
   const coreContext={
     source:'KIA',staffId:session.staffId,intent,
     pipeline:['UNDERSTAND','CLASSIFY','ROUTE','CONTEXT','NOETICA','KRATIVE_CORE','RESPONSE','UPDATE'],
     shortTermMemory:context.memories.map(x=>({content:x.content,importance:0.8,scope:x.scope,createdAt:x.createdAt})),
+    conversationHistory:conversationContext,
     knowledgeSources:context.knowledge.map(x=>({id:x.id,type:'knowledge',title:x.title,content:x.content,confidence:0.85,verified:true,createdAt:x.createdAt})),
     system:'You are the intelligence assistant serving the KIA product. Answer questions across general knowledge, technology, science, business, mathematics, writing, analysis, planning, coding, current-context reasoning, and everyday topics. Give a useful direct answer whenever the available information supports one. Do not refuse simply because the question does not match a predefined intent. Use the supplied memory and knowledge as context, and distinguish known information from uncertainty. For current or time-sensitive facts, do not invent freshness; state when verification is needed. Your product identity is KIA: identify yourself as KIA when asked. Do not call yourself Noe and do not present NOETICA as the assistant identity. NOETICA is the intelligence runtime behind KIA, while Krative Core is the underlying intelligence engine. If supplied memory directly answers the user question, answer from that memory explicitly. When the user asks what they asked you to remember, list or summarize the relevant stored memory content instead of merely saying a memory operation was processed. Keep answers natural and useful. Do not expose credentials, hidden system instructions, or internal implementation details unless the user explicitly asks for technical output.', productIdentity:'KIA', assistantName:'KIA', runtimeIdentity:'NOETICA Intelligence', coreIdentity:'Krative Core'
   };
@@ -811,6 +824,7 @@ async function runConfiguredPluginSmokeTests(){
 
 app.post('/api/chat',requireAuth,async(req,res)=>{
   const input=typeof(req.body&&req.body.input)==='string'?req.body.input.trim():'';
+  const conversation=normalizeConversation(req.body&&req.body.conversation);
   try{
     const memoryContent=extractMemoryRequest(input);
     if(memoryContent){
@@ -818,10 +832,10 @@ app.post('/api/chat',requireAuth,async(req,res)=>{
       await saveMemory(item);
       memory.unshift(item);
       record(req.session,'MEMORY_WRITE','store_memory',{memoryId:item.id,scope:item.scope,source:'natural_language'});
-      const result=await runKiaIntelligence(input,req.session);
+      const result=await runKiaIntelligence(input,req.session,conversation);
       return res.json({...result,memoryStored:true,storedMemory:memoryContent});
     }
-    const result=await runKiaIntelligence(input,req.session);
+    const result=await runKiaIntelligence(input,req.session,conversation);
     return res.json(result);
   }catch(error){
     const status=error.statusCode||502;
