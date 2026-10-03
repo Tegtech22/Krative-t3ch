@@ -948,24 +948,6 @@ app.post('/api/test/e2e',async(req,res)=>{
   }
 });
 
-app.post('/api/test/reset-knowledge',async(req,res)=>{
-  if(!E2E_TEST_TOKEN || req.headers['x-kia-e2e-token']!==E2E_TEST_TOKEN)
-    return res.status(404).json({error:'Not found.'});
-  try{
-    const masterKnowledge=require('./knowledge/krativeT3chFresh');
-    await pool.query('DELETE FROM kia_knowledge');
-    const createdAt=new Date().toISOString();
-    await pool.query(
-      'INSERT INTO kia_knowledge (id,title,content,created_at) VALUES ($1,$2,$3,$4)',
-      [masterKnowledge.id,masterKnowledge.title,masterKnowledge.content,createdAt]
-    );
-    knowledge.length=0;
-    knowledge.push({
-      id:masterKnowledge.id,
-      title:masterKnowledge.title,
-      content:masterKnowledge.content,
-      createdAt
-    });
     record({staffId:'knowledge-reset',role:'system'},'KNOWLEDGE_RESET','replace_authoritative_knowledge',{
       knowledgeId:masterKnowledge.id,
       title:masterKnowledge.title
