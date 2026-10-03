@@ -835,7 +835,7 @@ app.post('/api/chat',requireAuth,async(req,res)=>{
       const result=await runKiaIntelligence(input,req.session,conversation);
       return res.json({...result,memoryStored:true,storedMemory:memoryContent});
     }
-    const result=await runKiaIntelligence(input,req.session);
+    const result=await runKiaIntelligence(input,req.session,conversation);
     return res.json(result);
   }catch(error){
     const status=error.statusCode||502;
