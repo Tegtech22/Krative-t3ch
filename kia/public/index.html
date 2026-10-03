@@ -38,7 +38,22 @@ let chatHistory=JSON.parse(localStorage.getItem("kia_chat_history")||"[]");
 function saveChat(){localStorage.setItem("kia_chat_history",JSON.stringify(chatHistory.slice(-100)));}
 function renderChat(){const box=$("messages");box.innerHTML="";if(!chatHistory.length){const d=document.createElement("div");d.className="msg kia";d.innerHTML="<b>KIA is ready.</b><br>I can understand your request, use KIA memory and knowledge, route it through NOETICA and Krative Core, and return a useful response.";box.appendChild(d);return;}chatHistory.forEach((m,i)=>addMsg(m.role,m.text,false,i));box.scrollTop=box.scrollHeight;}
 function addMsg(kind,text,persist=true,index=null){const d=document.createElement("div");d.className="msg "+kind;const body=document.createElement("div");body.textContent=text;d.appendChild(body);if(kind==="kia"){const actions=document.createElement("div");actions.className="message-actions";const copy=document.createElement("button");copy.className="ghost";copy.textContent="Copy";copy.onclick=()=>navigator.clipboard?.writeText(text);actions.appendChild(copy);const idx=index===null?chatHistory.length-1:index;if(idx>=0){const regen=document.createElement("button");regen.className="ghost";regen.textContent="Regenerate";regen.onclick=()=>regenerateAt(idx);actions.appendChild(regen);}d.appendChild(actions);}$("messages").appendChild(d);$("messages").scrollTop=$("messages").scrollHeight;if(persist&&text){chatHistory.push({role:kind,text});saveChat();}}
-async function sendMessage(input){if(!input||$("send").disabled)return;$("send").disabled=true;$("send").textContent="Thinking…";chatHistory.push({role:"user",text:input});saveChat();renderChat();$("prompt").value="";const thinking=document.createElement("div");thinking.className="msg kia thinking";thinking.textContent="KIA is thinking…";thinking.id="thinking";$("messages").appendChild(thinking);$("messages").scrollTop=$("messages").scrollHeight;try{const d=await api("/api/chat",{method:"POST",body:JSON.stringify({input})});$("thinking")?.remove();chatHistory.push({role:"kia",text:d.response||"KIA received the request but did not return a readable response."});saveChat();renderChat();}catch(e){$("thinking")?.remove();chatHistory.push({role:"kia",text:"KIA: "+e.message});saveChat();renderChat();}finally{$("send").disabled=false;$("send").textContent="Send";}}
+async function sendMessage(input){
+  if(!input||$("send").disabled)return;
+  $("send").disabled=true;$("send").textContent="Thinking…";
+  const priorConversation=chatHistory.slice(-20).map(m=>({role:m.role,text:m.text}));
+  chatHistory.push({role:"user",text:input});saveChat();renderChat();$("prompt").value="";
+  const thinking=document.createElement("div");thinking.className="msg kia thinking";thinking.textContent="KIA is thinking…";thinking.id="thinking";$("messages").appendChild(thinking);$("messages").scrollTop=$("messages").scrollHeight;
+  try{
+    const d=await api("/api/chat",{method:"POST",body:JSON.stringify({input,conversation:priorConversation})});
+    $("thinking")?.remove();
+    chatHistory.push({role:"kia",text:d.response||"KIA received the request but did not return a readable response."});
+    saveChat();renderChat();
+  }catch(e){
+    $("thinking")?.remove();
+    chatHistory.push({role:"kia",text:"KIA: "+e.message});saveChat();renderChat();
+  }finally{$("send").disabled=false;$("send").textContent="Send";}
+}
 $("send").onclick=()=>sendMessage($("prompt").value.trim());
 $("prompt").onkeydown=e=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();$("send").click()}};
 $("newChat").onclick=()=>{chatHistory=[];saveChat();renderChat();$("prompt").focus();};
