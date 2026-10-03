@@ -243,7 +243,7 @@ async function loadPersistentState(){
   for(const k of knowledgeResult.rows) knowledge.push({id:k.id,title:k.title,content:k.content,createdAt:k.created_at.toISOString()});
   const documentResult=await pool.query('SELECT * FROM kia_documents ORDER BY created_at DESC LIMIT 200');
   for(const d of documentResult.rows) knowledge.push({id:'document:'+d.id,type:'document',staffId:d.staff_id,scope:'private',title:d.title,content:d.content,createdAt:d.created_at.toISOString()});
-  const masterKnowledge=require('./knowledge/krativeT3chMaster');
+  const masterKnowledge=require('./knowledge/krativeT3chFresh');
   const masterCreatedAt=new Date().toISOString();
   await pool.query(
     'INSERT INTO kia_knowledge (id,title,content,created_at) VALUES ($1,$2,$3,$4) ON CONFLICT (id) DO UPDATE SET title=EXCLUDED.title,content=EXCLUDED.content',
@@ -945,6 +945,39 @@ app.post('/api/test/e2e',async(req,res)=>{
     });
   }catch(error){
     return res.status(502).json({passed:false,test:'KIA → NOETICA → Krative Core',error:error.message});
+  }
+});
+
+app.post('/api/test/reset-knowledge',async(req,res)=>{
+  if(!E2E_TEST_TOKEN || req.headers['x-kia-e2e-token']!==E2E_TEST_TOKEN)
+    return res.status(404).json({error:'Not found.'});
+  try{
+    const masterKnowledge=require('./knowledge/krativeT3chFresh');
+    await pool.query('DELETE FROM kia_knowledge');
+    const createdAt=new Date().toISOString();
+    await pool.query(
+      'INSERT INTO kia_knowledge (id,title,content,created_at) VALUES ($1,$2,$3,$4)',
+      [masterKnowledge.id,masterKnowledge.title,masterKnowledge.content,createdAt]
+    );
+    knowledge.length=0;
+    knowledge.push({
+      id:masterKnowledge.id,
+      title:masterKnowledge.title,
+      content:masterKnowledge.content,
+      createdAt
+    });
+    record({staffId:'knowledge-reset',role:'system'},'KNOWLEDGE_RESET','replace_authoritative_knowledge',{
+      knowledgeId:masterKnowledge.id,
+      title:masterKnowledge.title
+    });
+    return res.json({
+      success:true,
+      deleted:'all kia_knowledge rows',
+      inserted:{id:masterKnowledge.id,title:masterKnowledge.title},
+      count:1
+    });
+  }catch(error){
+    return res.status(500).json({success:false,error:'Knowledge reset failed.',detail:error.message});
   }
 });
 
