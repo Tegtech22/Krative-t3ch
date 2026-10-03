@@ -227,10 +227,18 @@ async function loadPersistentState(){
   knowledge.length=0;
   const knowledgeResult=await pool.query('SELECT * FROM kia_knowledge ORDER BY created_at DESC');
   for(const k of knowledgeResult.rows) knowledge.push({id:k.id,title:k.title,content:k.content,createdAt:k.created_at.toISOString()});
-  if(!knowledge.length){
-    const seed={id:'kia-core',title:'KIA Intelligence Foundation',content:'KIA is Krative T3ch private staff intelligence assistant. It is aligned with NOETICA Intelligence and uses Krative Core when connected.',createdAt:new Date().toISOString()};
-    await pool.query('INSERT INTO kia_knowledge (id,title,content,created_at) VALUES ($1,$2,$3,$4)',[seed.id,seed.title,seed.content,seed.createdAt]);
-    knowledge.push(seed);
+  const masterKnowledge=require('./knowledge/krativeT3chMaster');
+  const masterCreatedAt=new Date().toISOString();
+  await pool.query(
+    'INSERT INTO kia_knowledge (id,title,content,created_at) VALUES ($1,$2,$3,$4) ON CONFLICT (id) DO UPDATE SET title=EXCLUDED.title,content=EXCLUDED.content',
+    [masterKnowledge.id,masterKnowledge.title,masterKnowledge.content,masterCreatedAt]
+  );
+  const existingMaster=knowledge.find(x=>x.id===masterKnowledge.id);
+  if(existingMaster){
+    existingMaster.title=masterKnowledge.title;
+    existingMaster.content=masterKnowledge.content;
+  }else{
+    knowledge.unshift({id:masterKnowledge.id,title:masterKnowledge.title,content:masterKnowledge.content,createdAt:masterCreatedAt});
   }
   const defaultPlugins=[
     ['intelligence','KIA Intelligence','Route requests through NOETICA Intelligence and Krative Core.','intelligence'],['memory','KIA Memory','Store and retrieve staff-scoped KIA memory.','productivity'],['knowledge','KIA Knowledge','Read and write the persistent KIA knowledge store.','knowledge'],['audit','KIA Audit','Record and inspect protected KIA activity.','security'],['openai','OpenAI / ChatGPT','Use OpenAI models through the configured OpenAI API connection.','ai'],['claude','Claude','Use Anthropic Claude models through the configured Anthropic API connection.','ai'],['github','GitHub','Read and manage authorized GitHub repositories, issues and pull requests.','development'],['supabase','Supabase','Access authorized Supabase projects and database APIs.','backend'],['gmail','Gmail','Connect approved staff Gmail accounts through Google OAuth.','productivity'],['google-calendar','Google Calendar','Connect approved staff calendars through Google OAuth.','productivity'],['google-drive','Google Drive','Connect approved staff Drive files through Google OAuth.','productivity'],['gemini','Gemini','Use Google Gemini models through the configured Google AI API connection.','ai'],['slack','Slack','Connect authorized Slack workspaces for staff collaboration.','collaboration'],['render','Render','Inspect and operate authorized Render services through the configured Render API connection.','infrastructure']
@@ -587,7 +595,12 @@ function retrieveContext(staffId,input){
     ? staffMemories.slice(0,5).map(x=>({...x,_score:1}))
     : staffMemories.map(x=>({...x,_score:score(x.content)})).filter(x=>x._score>0).sort((a,b)=>b._score-a._score).slice(0,5);
   const knowledgeHits=knowledge.map(x=>({...x,_score:score(x.title+' '+x.content)})).filter(x=>x._score>0).sort((a,b)=>b._score-a._score).slice(0,5);
-  return {memories,knowledge:knowledgeHits};
+  const companyQuery=/\b(krative|krative t3ch|our company|our products|our architecture|our system|our brand|noetica|krative core|kif|uis|hin|klgi)\b/i.test(normalized);
+  const master=knowledge.find(x=>x.id==='krative-t3ch-master');
+  if(companyQuery && master && !knowledgeHits.some(x=>x.id===master.id)){
+    knowledgeHits.unshift({...master,_score:999});
+  }
+  return {memories,knowledge:knowledgeHits.slice(0,6)};
 }
 function buildKiaResponse(data){
   const result=data&&data.result!==undefined?data.result:data;
