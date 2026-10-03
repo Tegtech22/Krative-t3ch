@@ -948,21 +948,6 @@ app.post('/api/test/e2e',async(req,res)=>{
   }
 });
 
-    record({staffId:'knowledge-reset',role:'system'},'KNOWLEDGE_RESET','replace_authoritative_knowledge',{
-      knowledgeId:masterKnowledge.id,
-      title:masterKnowledge.title
-    });
-    return res.json({
-      success:true,
-      deleted:'all kia_knowledge rows',
-      inserted:{id:masterKnowledge.id,title:masterKnowledge.title},
-      count:1
-    });
-  }catch(error){
-    return res.status(500).json({success:false,error:'Knowledge reset failed.',detail:error.message});
-  }
-});
-
 app.get('/api/memory',requireAuth,(req,res)=>res.json({items:memory.filter(x=>x.staffId===req.session.staffId||x.scope==='shared')}));
 app.post('/api/memory',requireAuth,async(req,res)=>{
   const content=typeof(req.body&&req.body.content)==='string'?req.body.content.trim():'';
