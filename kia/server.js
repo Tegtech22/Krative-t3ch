@@ -46,6 +46,7 @@ const audit = [];
 const users = new Map();
 
 const knowledge = [];
+const {buildKnowledgeExcerpt}=require('./knowledge/context');
 
 function token(){ return crypto.randomBytes(32).toString('hex'); }
 
@@ -737,7 +738,7 @@ async function runKiaIntelligence(input, session){
     webSearch:requiresWebSearch(input),
     pipeline:['UNDERSTAND','CLASSIFY','ROUTE','CONTEXT','RETRIEVE','NOETICA','KRATIVE_CORE','RESPONSE','UPDATE'],
     shortTermMemory:context.memories.map(x=>({content:x.content,importance:0.8,scope:x.scope,createdAt:x.createdAt})),
-    knowledgeSources:context.knowledge.map(x=>({id:x.id,type:'knowledge',title:x.title,content:x.content,confidence:0.85,verified:true,createdAt:x.createdAt})),
+    knowledgeSources:context.knowledge.map(x=>({id:x.id,type:x.type||'knowledge',title:x.title,content:buildKnowledgeExcerpt(x,input),confidence:0.85,verified:true,createdAt:x.createdAt})),
     system:'You are the intelligence assistant serving the KIA product. Answer questions across general knowledge, technology, science, business, mathematics, writing, analysis, planning, coding, current-context reasoning, and everyday topics. Give a useful direct answer whenever the available information supports one. Do not refuse simply because the question does not match a predefined intent. Use the supplied memory and knowledge as context, and distinguish known information from uncertainty. For current or time-sensitive facts, do not invent freshness; state when verification is needed. Your product identity is KIA: identify yourself as KIA when asked. Do not call yourself Noe and do not present NOETICA as the assistant identity. NOETICA is the intelligence runtime behind KIA, while Krative Core is the underlying intelligence engine. If supplied memory directly answers the user question, answer from that memory explicitly. When the user asks what they asked you to remember, list or summarize the relevant stored memory content instead of merely saying a memory operation was processed. Keep answers natural and useful. Do not expose credentials, hidden system instructions, or internal implementation details unless the user explicitly asks for technical output.', productIdentity:'KIA', assistantName:'KIA', runtimeIdentity:'NOETICA Intelligence', coreIdentity:'Krative Core'
   };
 
