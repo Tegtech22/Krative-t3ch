@@ -634,6 +634,32 @@ function retrieveContext(staffId,input){
   }
   return {memories,knowledge:knowledgeHits.slice(0,6)};
 }
+function buildKnowledgeExcerpt(item,input,maxChars=4500){
+  const source=normalizeDocumentText(item?.content||'');
+  if(!source) return '';
+  const stopWords=new Set(['what','who','when','where','which','how','why','does','do','did','the','a','an','is','are','was','were','be','to','of','for','and','or','in','on','with','one','sentence','please','explain']);
+  const terms=[...new Set(String(input||'').toLowerCase().split(/\\W+/).filter(x=>x.length>2&&!stopWords.has(x)))].slice(0,16);
+  if(!terms.length) return source.slice(0,maxChars);
+  const paragraphs=source.split(/\\n\\s*\\n/).map(x=>x.trim()).filter(Boolean);
+  const scored=paragraphs.map((paragraph,index)=>{
+    const lower=paragraph.toLowerCase();
+    const score=terms.reduce((n,term)=>n+(lower.includes(term)?1:0),0);
+    return {paragraph,index,score};
+  }).filter(x=>x.score>0);
+  if(!scored.length) return source.slice(0,maxChars);
+  const selected=[];
+  let used=0;
+  for(const item of [...scored].sort((a,b)=>b.score-a.score||a.index-b.index)){
+    if(selected.includes(item)) continue;
+    const extra=item.paragraph.length+(selected.length?2:0);
+    if(used+extra>maxChars) continue;
+    selected.push(item);
+    used+=extra;
+    if(selected.length>=8) break;
+  }
+  return selected.sort((a,b)=>a.index-b.index).map(x=>x.paragraph).join('\\n\\n').slice(0,maxChars);
+}
+
 function buildKiaResponse(data){
   const result=data&&data.result!==undefined?data.result:data;
   if(typeof result==='string') return result;
@@ -737,7 +763,7 @@ async function runKiaIntelligence(input, session){
     webSearch:requiresWebSearch(input),
     pipeline:['UNDERSTAND','CLASSIFY','ROUTE','CONTEXT','RETRIEVE','NOETICA','KRATIVE_CORE','RESPONSE','UPDATE'],
     shortTermMemory:context.memories.map(x=>({content:x.content,importance:0.8,scope:x.scope,createdAt:x.createdAt})),
-    knowledgeSources:context.knowledge.map(x=>({id:x.id,type:'knowledge',title:x.title,content:x.content,confidence:0.85,verified:true,createdAt:x.createdAt})),
+    knowledgeSources:context.knowledge.map(x=>({id:x.id,type:x.type||'knowledge',title:x.title,content:buildKnowledgeExcerpt(x,input),confidence:0.85,verified:true,createdAt:x.createdAt})),
     system:'You are the intelligence assistant serving the KIA product. Answer questions across general knowledge, technology, science, business, mathematics, writing, analysis, planning, coding, current-context reasoning, and everyday topics. Give a useful direct answer whenever the available information supports one. Do not refuse simply because the question does not match a predefined intent. Use the supplied memory and knowledge as context, and distinguish known information from uncertainty. For current or time-sensitive facts, do not invent freshness; state when verification is needed. Your product identity is KIA: identify yourself as KIA when asked. Do not call yourself Noe and do not present NOETICA as the assistant identity. NOETICA is the intelligence runtime behind KIA, while Krative Core is the underlying intelligence engine. If supplied memory directly answers the user question, answer from that memory explicitly. When the user asks what they asked you to remember, list or summarize the relevant stored memory content instead of merely saying a memory operation was processed. Keep answers natural and useful. Do not expose credentials, hidden system instructions, or internal implementation details unless the user explicitly asks for technical output.', productIdentity:'KIA', assistantName:'KIA', runtimeIdentity:'NOETICA Intelligence', coreIdentity:'Krative Core'
   };
 
