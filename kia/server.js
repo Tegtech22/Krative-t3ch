@@ -119,9 +119,13 @@ function verifyPassword(password,stored){
 }
 
 async function generateStaffId(){
-  const {rows}=await pool.query("SELECT nextval('kia_staff_id_seq') AS sequence_number");
-  const sequenceNumber=Number(rows[0].sequence_number);
-  return `KT-${new Date().getUTCFullYear()}-${String(sequenceNumber).padStart(4,'0')}`;
+  while(true){
+    const {rows}=await pool.query("SELECT nextval('kia_staff_id_seq') AS sequence_number");
+    const sequenceNumber=Number(rows[0].sequence_number);
+    const staffId=`KT-${new Date().getUTCFullYear()}-${String(sequenceNumber).padStart(4,'0')}`;
+    const existing=await pool.query('SELECT 1 FROM kia_users WHERE staff_id=$1 LIMIT 1',[staffId]);
+    if(!existing.rows[0]) return staffId;
+  }
 }
 
 function publicUser(u){
