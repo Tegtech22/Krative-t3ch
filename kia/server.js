@@ -45,6 +45,17 @@ const memory = [];
 const audit = [];
 const users = new Map();
 
+const KIA_DEPARTMENTS = [
+  'Technology & Engineering',
+  'Intelligence & Research',
+  'Product & Innovation',
+  'Design & Creative',
+  'Business & Operations',
+  'Marketing & Communications',
+  'Human Intelligence Network (HIN)',
+  'Administration'
+];
+
 const knowledge = [];
 const {buildKnowledgeExcerpt}=require('./knowledge/context');
 
@@ -107,6 +118,16 @@ function verifyPassword(password,stored){
   });
 }
 
+async function generateStaffId(){
+  while(true){
+    const {rows}=await pool.query("SELECT nextval('kia_staff_id_seq') AS sequence_number");
+    const sequenceNumber=Number(rows[0].sequence_number);
+    const staffId=`KT-${new Date().getUTCFullYear()}-${String(sequenceNumber).padStart(4,'0')}`;
+    const existing=await pool.query('SELECT 1 FROM kia_users WHERE staff_id=$1 LIMIT 1',[staffId]);
+    if(!existing.rows[0]) return staffId;
+  }
+}
+
 function publicUser(u){
   return {
     id:u.id,
@@ -130,7 +151,7 @@ async function initDatabase(){
       email TEXT NOT NULL UNIQUE,
       phone TEXT NOT NULL,
       department TEXT NOT NULL,
-      staff_id TEXT NOT NULL UNIQUE,
+      staff_id TEXT UNIQUE,
       password_hash TEXT NOT NULL,
       role TEXT NOT NULL DEFAULT 'staff',
       status TEXT NOT NULL DEFAULT 'pending',
@@ -138,6 +159,8 @@ async function initDatabase(){
       approved_at TIMESTAMPTZ
     )
   `);
+  await pool.query("ALTER TABLE kia_users ALTER COLUMN staff_id DROP NOT NULL");
+  await pool.query("CREATE SEQUENCE IF NOT EXISTS kia_staff_id_seq");
   await pool.query(`
     CREATE TABLE IF NOT EXISTS kia_sessions (
       token TEXT PRIMARY KEY,
@@ -475,22 +498,23 @@ app.post('/api/signup',async(req,res)=>{
     const email=String(req.body?.email||'').trim().toLowerCase().slice(0,160);
     const phone=String(req.body?.phone||'').trim().slice(0,40);
     const department=String(req.body?.department||'').trim().slice(0,100);
-    const staffId=String(req.body?.staffId||'').trim().slice(0,80);
     const password=typeof req.body?.password==='string'?req.body.password:'';
 
-    if(!name||!email||!phone||!department||!staffId||!password)
-      return res.status(400).json({error:'Name, email, phone, department, staff ID and password are required.'});
+    if(!name||!email||!phone||!department||!password)
+      return res.status(400).json({error:'Name, email, phone, department and password are required.'});
     if(!/^\S+@\S+\.\S+$/.test(email))
       return res.status(400).json({error:'Enter a valid email address.'});
+    if(!KIA_DEPARTMENTS.includes(department))
+      return res.status(400).json({error:'Select a valid Krative T3ch department.'});
     if(password.length<8)
       return res.status(400).json({error:'Password must be at least 8 characters.'});
 
-    const duplicate=[...users.values()].find(u=>u.email===email||u.staffId.toLowerCase()===staffId.toLowerCase());
-    if(duplicate) return res.status(409).json({error:'An account with that email or staff ID already exists.'});
+    const duplicate=[...users.values()].find(u=>u.email===email);
+    if(duplicate) return res.status(409).json({error:'An account with that email already exists.'});
 
     const user={
       id:crypto.randomUUID(),
-      name,email,phone,department,staffId,
+      name,email,phone,department,staffId:null,
       passwordHash:await hashPassword(password),
       role:'staff',
       status:'pending',
@@ -501,7 +525,7 @@ app.post('/api/signup',async(req,res)=>{
     record({staffId:'public-signup'},'AUTH_SIGNUP','staff_signup',{userId:user.id,email,department});
     res.status(201).json({
       success:true,
-      message:'Registration submitted. Your account is pending administrator approval.',
+      message:'Registration submitted. Your account is pending administrator approval. Your Krative T3ch staff ID will be generated after approval.',
       user:publicUser(user)
     });
   }catch(error){
@@ -518,6 +542,7 @@ app.post('/api/account-login',async(req,res)=>{
     return res.status(401).json({error:'Invalid email or password.'});
   if(user.status==='pending') return res.status(403).json({error:'Your account is pending administrator approval.'});
   if(user.status==='rejected') return res.status(403).json({error:'Your registration was not approved.'});
+  if(!user.staffId) return res.status(403).json({error:'Your account is approved, but your staff ID has not been issued yet. Please contact an administrator.'});
 
   const t=token();
   const s={staffId:user.staffId,userId:user.id,role:user.role,createdAt:new Date().toISOString()};
@@ -560,6 +585,7 @@ app.get('/api/admin/users',requireAuth,requireAdmin,(req,res)=>{
 app.post('/api/admin/users/:id/approve',requireAuth,requireAdmin,async(req,res)=>{
   const u=users.get(req.params.id);
   if(!u) return res.status(404).json({error:'User not found.'});
+  if(!u.staffId) u.staffId=await generateStaffId();
   u.status='approved';
   u.approvedAt=new Date().toISOString();
   try{
