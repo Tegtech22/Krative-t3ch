@@ -125,7 +125,24 @@ document.querySelectorAll(".suggestion").forEach(b=>b.onclick=()=>sendMessage(b.
 renderChat();
 $("knowledgeForm").onsubmit=async e=>{e.preventDefault();try{await api("/api/knowledge",{method:"POST",body:JSON.stringify({title:$("ktitle").value,content:$("kcontent").value})});e.target.reset();loadKnowledge()}catch(x){alert(x.message)}};
 $("memoryForm").onsubmit=async e=>{e.preventDefault();try{await api("/api/memory",{method:"POST",body:JSON.stringify({content:$("mcontent").value})});e.target.reset();loadMemory()}catch(x){alert(x.message)}};
-async function loadKnowledge(){const d=await api("/api/knowledge");$("knowledgeList").innerHTML=d.items.map(x=>'<div class="item"><div class="row"><b>'+esc(x.title)+'</b><span class="muted">'+esc(x.status||'approved')+'</span></div><p class="muted">'+esc(x.content)+'</p>'+(x.type!=='document'?'<button class="ghost" onclick="editKnowledge(\\''+x.id+'\\')">Edit</button>':'')+'</div>').join("")||'<div class="muted">No knowledge in the centre.</div>'}
+async function loadKnowledge(){
+  const d=await api("/api/knowledge");
+  const box=$("knowledgeList");
+  box.innerHTML="";
+  (d.items||[]).forEach(x=>{
+    const item=document.createElement("div");item.className="item";
+    const row=document.createElement("div");row.className="row";
+    const title=document.createElement("b");title.textContent=x.title||"Untitled";
+    const status=document.createElement("span");status.className="muted";status.textContent=x.status||"approved";
+    row.append(title,status);item.appendChild(row);
+    const p=document.createElement("p");p.className="muted";p.textContent=x.content||"";item.appendChild(p);
+    if(x.type!=="document"){
+      const btn=document.createElement("button");btn.className="ghost";btn.textContent="Edit";btn.onclick=()=>editKnowledge(x.id);item.appendChild(btn);
+    }
+    box.appendChild(item);
+  });
+  if(!d.items?.length)box.innerHTML='<div class="muted">No knowledge in the centre.</div>';
+}
 async function editKnowledge(id){const d=await api("/api/knowledge");const item=d.items.find(x=>x.id===id);if(!item)return;const title=prompt("Knowledge title:",item.title);if(title===null)return;const content=prompt("Knowledge content:",item.content);if(content===null)return;try{await api("/api/knowledge/"+encodeURIComponent(id),{method:"PUT",body:JSON.stringify({title,content})});loadKnowledge();loadAdmin();loadAudit()}catch(e){alert(e.message)}}
 async function loadMemory(){const d=await api("/api/memory");$("memoryList").innerHTML=d.items.map(x=>'<div class="item">'+esc(x.content)+'<div class="muted">'+x.createdAt+'</div></div>').join("")}
 async function loadAudit(){const d=await api("/api/audit");$("auditList").innerHTML=d.items.map(x=>'<div class="item"><div><b>'+esc(x.eventType)+'</b> — '+esc(x.action)+'</div>'+(x.user?'<div class="muted"><b>'+esc(x.user.name)+'</b> · '+esc(x.user.email)+' · '+esc(x.user.department)+' · '+esc(x.user.staffId||'')+'</div>':'<div class="muted">Staff ID: '+esc(x.staffId)+'</div>')+'<div class="muted">'+esc(x.createdAt)+'</div>'+(x.metadata&&Object.keys(x.metadata).length?'<div class="muted">'+esc(JSON.stringify(x.metadata))+'</div>':'')+'</div>').join("")||'<div class="muted">No activity recorded.</div>'}
@@ -156,7 +173,27 @@ const googleError=googleParams.get("google_error");
 if(googleToken){token=googleToken;localStorage.setItem("kia_token",token);history.replaceState({},document.title,"/");showApp()}
 else if(googleError){$("accountLoginError").textContent=googleError;setLoginMode("account");history.replaceState({},document.title,"/")}
 else if(token)showApp();
-async function loadNotifications(){try{const d=await api("/api/notifications");$("notificationBadge").textContent=d.unread?"("+d.unread+")":"";$("notificationList").innerHTML=d.items.map(x=>'<div class="item" style="cursor:pointer" onclick="openNotification(\\''+x.id+'\\')"><div class="row"><b>'+esc(x.title)+'</b><span class="muted">'+(x.read?"Read":"New")+'</span></div><div class="muted">'+esc(x.createdAt)+'</div><div id="notif-'+x.id+'" class="hidden"><p>'+esc(x.message)+'</p><button class="ghost" onclick="event.stopPropagation();readNotification(\\''+x.id+'\\')">Mark read</button></div></div>').join("")||'<div class="muted">No notifications.</div>'}catch{}}
+async function loadNotifications(){
+  try{
+    const d=await api("/api/notifications");
+    $("notificationBadge").textContent=d.unread?"("+d.unread+")":"";
+    const box=$("notificationList");box.innerHTML="";
+    (d.items||[]).forEach(x=>{
+      const item=document.createElement("div");item.className="item";item.style.cursor="pointer";
+      item.onclick=()=>openNotification(x.id);
+      const row=document.createElement("div");row.className="row";
+      const title=document.createElement("b");title.textContent=x.title||"Notification";
+      const state=document.createElement("span");state.className="muted";state.textContent=x.read?"Read":"New";
+      row.append(title,state);item.appendChild(row);
+      const created=document.createElement("div");created.className="muted";created.textContent=x.createdAt||"";item.appendChild(created);
+      const detail=document.createElement("div");detail.id="notif-"+x.id;detail.className="hidden";
+      const p=document.createElement("p");p.textContent=x.message||"";detail.appendChild(p);
+      const read=document.createElement("button");read.className="ghost";read.textContent="Mark read";read.onclick=e=>{e.stopPropagation();readNotification(x.id)};detail.appendChild(read);
+      item.appendChild(detail);box.appendChild(item);
+    });
+    if(!d.items?.length)box.innerHTML='<div class="muted">No notifications.</div>';
+  }catch{}
+}
 async function openNotification(id){const el=$("notif-"+id);if(el)el.classList.toggle("hidden");try{await api("/api/notifications/"+id+"/read",{method:"POST"});const item=el?.parentElement?.querySelector(".row .muted");if(item)item.textContent="Read";const badge=$("notificationBadge");if(badge&&badge.textContent){const n=Math.max(0,Number(badge.textContent.replace(/[()]/g,""))-1);badge.textContent=n?"("+n+")":""}}catch{}}
 async function readNotification(id){await api("/api/notifications/"+id+"/read",{method:"POST"});loadNotifications()}
 async function unlockProfile(){if(profileUnlocked){loadProfile();return}try{const existing=await fetch("/api/profile",{headers:{Authorization:"Bearer "+token}});if(existing.ok){profileUnlocked=true;loadProfile();return}const b=await api("/api/profile/bootstrap",{method:"POST"});if(!b.initialized)alert("Your generated profile password is:\n\n"+b.generatedPassword+"\n\nSave it securely. It is shown only once.");const p=prompt("Enter your generated profile password to unlock Profile:");if(!p)return;await api("/api/profile/unlock",{method:"POST",body:JSON.stringify({password:p})});profileUnlocked=true;loadProfile()}catch(e){alert(e.message)}}
