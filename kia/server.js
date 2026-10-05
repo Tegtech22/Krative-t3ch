@@ -1462,7 +1462,40 @@ app.post('/mcp', async (req, res) => {
   }
 
   const id = message.id ?? null;
+  const headerProtocol = String(req.headers['mcp-protocol-version'] || '');
+  const headerMethod = String(req.headers['mcp-method'] || '');
+  const headerName = String(req.headers['mcp-name'] || '');
+  const isModern = requestedVersion === KIA_MCP_PROTOCOL_VERSION || headerProtocol === KIA_MCP_PROTOCOL_VERSION;
+
+  if (isModern) {
+    if (headerProtocol !== KIA_MCP_PROTOCOL_VERSION) {
+      return res.status(400).json(mcpError(id, -32020, 'Mcp-Protocol-Version must match the 2026-07-28 protocol version.'));
+    }
+    if (headerMethod && headerMethod !== String(message.method || '')) {
+      return res.status(400).json(mcpError(id, -32020, 'Mcp-Method does not match the JSON-RPC method.'));
+    }
+    if (!headerMethod) {
+      return res.status(400).json(mcpError(id, -32020, 'Mcp-Method is required for 2026-07-28 requests.'));
+    }
+    if (message.method === 'tools/call') {
+      const expectedName = String(message.params?.name || '');
+      if (!headerName || headerName !== expectedName) {
+        return res.status(400).json(mcpError(id, -32020, 'Mcp-Name does not match tools/call params.name.'));
+      }
+    } else if (headerName) {
+      return res.status(400).json(mcpError(id, -32020, 'Mcp-Name is only valid when routing a named MCP operation.'));
+    }
+  }
+
   try {
+    if (message.method === 'server/discover') {
+      return res.json(mcpJsonRpc(id, {
+        protocolVersion: KIA_MCP_PROTOCOL_VERSION,
+        serverInfo: { name: 'krative-kia', version: '0.1.0' },
+        capabilities: { tools: { listChanged: false } }
+      }));
+    }
+
     if (message.method === 'initialize') {
       return res.json(mcpJsonRpc(id, {
         protocolVersion: KIA_MCP_PROTOCOL_VERSION,
