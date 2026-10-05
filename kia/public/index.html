@@ -25,6 +25,7 @@ function setLoginMode(mode){
 }
 $("loginTab").onclick=()=>setLoginMode("account");
 $("signupTab").onclick=()=>setLoginMode("signup");$("adminTab").onclick=()=>setLoginMode("legacy");
+setLoginMode("account");
 $("googleLogin").onclick=()=>{location.href="/api/auth/google"};
 $("attachDocument").onclick=()=>$("documentFile").click();
 $("documentFile").onchange=async()=>{
@@ -51,10 +52,63 @@ $("documentFile").onchange=async()=>{
 
 
 async function api(path,opts={}){opts.headers={...(opts.headers||{}),Authorization:"Bearer "+token,"Content-Type":"application/json"};const r=await fetch(path,opts);const d=await r.json().catch(()=>({error:"Invalid response"}));if(!r.ok){const detail=d.detail?" — "+d.detail:"";const code=d.code?" ["+d.code+"]":"";const dependency=d.dependency&&d.dependency!=="unknown"?" ("+d.dependency+")":"";throw new Error((d.error||"Request failed")+code+dependency+detail)}return d}
-function showApp(){ $("login").style.display="none";$("app").style.display="block";refreshAll() }
+async function showApp(){
+  try{
+    const session=await api("/api/session");
+    currentStaff=session.staff;
+    $("login").style.display="none";
+    $("app").style.display="block";
+    await refreshAll();
+  }catch(e){
+    token="";
+    localStorage.removeItem("kia_token");
+    $("app").style.display="none";
+    $("login").style.display="grid";
+    setLoginMode("account");
+    $("accountLoginError").textContent="Your session is no longer valid. Please log in again.";
+  }
+}
 $("loginForm").onsubmit=async e=>{e.preventDefault();$("loginError").textContent="";try{const r=await fetch("/api/login",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({staffId:$("staffId").value,accessCode:$("code").value})});const d=await r.json();if(!r.ok)throw new Error(d.error);token=d.token;localStorage.setItem("kia_token",token);showApp()}catch(e){$("loginError").textContent=e.message}};
-$("accountLoginForm").onsubmit=async e=>{e.preventDefault();$("accountLoginError").textContent="";try{const r=await fetch("/api/account-login",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({email:$("loginEmail").value,password:$("loginPassword").value})});const d=await r.json();if(!r.ok)throw new Error(d.error);token=d.token;localStorage.setItem("kia_token",token);showApp()}catch(e){$("accountLoginError").textContent=e.message}};
-$("signupForm").onsubmit=async e=>{e.preventDefault();$("signupError").textContent="";try{const r=await fetch("/api/signup",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name:$("signupName").value,email:$("signupEmail").value,phone:$("signupPhone").value,department:$("signupDepartment").value,password:$("signupPassword").value})});const d=await r.json();if(!r.ok)throw new Error(d.error);e.target.reset();$("signupError").textContent=d.message;setLoginMode("account");$("accountLoginError").textContent=d.message}catch(x){$("signupError").textContent=x.message}};
+$("accountLoginForm").onsubmit=async e=>{
+  e.preventDefault();
+  $("accountLoginError").textContent="";
+  const email=$("loginEmail").value.trim().toLowerCase();
+  const password=$("loginPassword").value;
+  if(!email||!password){$("accountLoginError").textContent="Enter your email and password.";return;}
+  try{
+    const r=await fetch("/api/account-login",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({email,password})});
+    const d=await r.json().catch(()=>({error:"The server returned an invalid response."}));
+    if(!r.ok)throw new Error(d.error||"Login failed.");
+    if(!d.token)throw new Error("Login succeeded without a session token. Please try again.");
+    token=d.token;
+    localStorage.setItem("kia_token",token);
+    await showApp();
+  }catch(e){$("accountLoginError").textContent=e.message}
+};
+$("signupForm").onsubmit=async e=>{
+  e.preventDefault();
+  $("signupError").textContent="";
+  const payload={
+    name:$("signupName").value.trim(),
+    email:$("signupEmail").value.trim().toLowerCase(),
+    phone:$("signupPhone").value.trim(),
+    department:$("signupDepartment").value,
+    password:$("signupPassword").value
+  };
+  if(!payload.name||!payload.email||!payload.phone||!payload.department||!payload.password){
+    $("signupError").textContent="Complete all registration fields.";
+    return;
+  }
+  if(payload.password.length<8){$("signupError").textContent="Password must be at least 8 characters.";return;}
+  try{
+    const r=await fetch("/api/signup",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
+    const d=await r.json().catch(()=>({error:"The server returned an invalid response."}));
+    if(!r.ok)throw new Error(d.error||"Registration failed.");
+    e.target.reset();
+    setLoginMode("account");
+    $("accountLoginError").textContent=d.message||"Registration submitted. Wait for administrator approval before logging in.";
+  }catch(x){$("signupError").textContent=x.message}
+};
 $("logout").onclick=async()=>{try{await api("/api/logout",{method:"POST"})}catch{}localStorage.removeItem("kia_token");location.reload()};$("notificationsBtn").onclick=()=>openPage("notifications");$("profileBtn").onclick=()=>openPage("profile");$("markAllRead").onclick=async()=>{await api("/api/notifications/read-all",{method:"POST"});loadNotifications()};
 function openPage(page){document.querySelectorAll(".navbtn").forEach(x=>x.classList.remove("active"));const b=document.querySelector('[data-page="'+page+'"]');if(b)b.classList.add("active");document.querySelectorAll(".page").forEach(p=>p.classList.add("hidden"));$(page).classList.remove("hidden");if(page==="profile")unlockProfile();if(page==="notifications")loadNotifications();if(page==="admin")loadAdmin()}document.querySelectorAll(".navbtn").forEach(b=>b.onclick=()=>openPage(b.dataset.page));
 let chatHistory=JSON.parse(localStorage.getItem("kia_chat_history")||"[]");
@@ -101,7 +155,7 @@ const googleToken=googleParams.get("google_token");
 const googleError=googleParams.get("google_error");
 if(googleToken){token=googleToken;localStorage.setItem("kia_token",token);history.replaceState({},document.title,"/");showApp()}
 else if(googleError){$("accountLoginError").textContent=googleError;setLoginMode("account");history.replaceState({},document.title,"/")}
-else if(token)api("/api/session").then(showApp).catch(()=>{localStorage.removeItem("kia_token")});
+else if(token)showApp();
 async function loadNotifications(){try{const d=await api("/api/notifications");$("notificationBadge").textContent=d.unread?"("+d.unread+")":"";$("notificationList").innerHTML=d.items.map(x=>'<div class="item" style="cursor:pointer" onclick="openNotification(\\''+x.id+'\\')"><div class="row"><b>'+esc(x.title)+'</b><span class="muted">'+(x.read?"Read":"New")+'</span></div><div class="muted">'+esc(x.createdAt)+'</div><div id="notif-'+x.id+'" class="hidden"><p>'+esc(x.message)+'</p><button class="ghost" onclick="event.stopPropagation();readNotification(\\''+x.id+'\\')">Mark read</button></div></div>').join("")||'<div class="muted">No notifications.</div>'}catch{}}
 async function openNotification(id){const el=$("notif-"+id);if(el)el.classList.toggle("hidden");try{await api("/api/notifications/"+id+"/read",{method:"POST"});const item=el?.parentElement?.querySelector(".row .muted");if(item)item.textContent="Read";const badge=$("notificationBadge");if(badge&&badge.textContent){const n=Math.max(0,Number(badge.textContent.replace(/[()]/g,""))-1);badge.textContent=n?"("+n+")":""}}catch{}}
 async function readNotification(id){await api("/api/notifications/"+id+"/read",{method:"POST"});loadNotifications()}
