@@ -984,7 +984,7 @@ async function runKiaIntelligence(input, session){
 app.post('/api/test/e2e',async(req,res)=>{
   if(!E2E_TEST_TOKEN) return res.status(503).json({error:'KIA E2E test token is not configured.'});
   const supplied=String(req.headers['x-kia-e2e-token']||'');
-  if(!supplied || !crypto.timingSafeEqual(Buffer.from(supplied),Buffer.from(E2E_TEST_TOKEN))) return res.status(401).json({error:'Unauthorized E2E test request.'});
+  if(!supplied || supplied.length!==E2E_TEST_TOKEN.length || !crypto.timingSafeEqual(Buffer.from(supplied),Buffer.from(E2E_TEST_TOKEN))) return res.status(401).json({error:'Unauthorized E2E test request.'});
   const session={staffId:'e2e-test',role:'test',createdAt:new Date().toISOString()};
   try{
     const result=await runKiaIntelligence('KIA live integration test: explain in one sentence what Krative Core does.',session);
