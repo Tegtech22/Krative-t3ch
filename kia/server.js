@@ -58,6 +58,11 @@ const KIA_DEPARTMENTS = [
 
 const knowledge = [];
 const {buildKnowledgeExcerpt}=require('./knowledge/context');
+const notifications=[];
+function canManageKnowledge(s){return s?.role==='admin'||s?.role==='department_head';}
+function profilePassword(){return crypto.randomBytes(9).toString('base64url')+'-'+crypto.randomBytes(3).toString('hex');}
+async function notifyStaff(staffId,type,title,message){const item={id:crypto.randomUUID(),staffId,type,title,message,read:false,createdAt:new Date().toISOString()};notifications.unshift(item);if(notifications.length>1000)notifications.pop();await pool.query('INSERT INTO kia_notifications (id,staff_id,type,title,message,read,created_at) VALUES ($1,$2,$3,$4,$5,$6,$7)',[item.id,item.staffId,item.type,item.title,item.message,item.read,item.createdAt]);return item;}
+function publicProfile(u){return {id:u.id,name:u.name,email:u.email,phone:u.phone,department:u.department,staffId:u.staffId,role:u.role,status:u.status,createdAt:u.createdAt,approvedAt:u.approvedAt||null};}
 
 function token(){ return crypto.randomBytes(32).toString('hex'); }
 
@@ -156,10 +161,12 @@ async function initDatabase(){
       role TEXT NOT NULL DEFAULT 'staff',
       status TEXT NOT NULL DEFAULT 'pending',
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      approved_at TIMESTAMPTZ
+      approved_at TIMESTAMPTZ,
+      profile_password_hash TEXT
     )
   `);
   await pool.query("ALTER TABLE kia_users ALTER COLUMN staff_id DROP NOT NULL");
+  await pool.query("ALTER TABLE kia_users ADD COLUMN IF NOT EXISTS profile_password_hash TEXT");
   await pool.query("CREATE SEQUENCE IF NOT EXISTS kia_staff_id_seq");
   await pool.query(`
     CREATE TABLE IF NOT EXISTS kia_sessions (
@@ -184,9 +191,17 @@ async function initDatabase(){
       id TEXT PRIMARY KEY,
       title TEXT NOT NULL,
       content TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'approved',
+      created_by TEXT,
+      approved_by TEXT,
+      approved_at TIMESTAMPTZ,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
+  await pool.query("ALTER TABLE kia_knowledge ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'approved'");
+  await pool.query("ALTER TABLE kia_knowledge ADD COLUMN IF NOT EXISTS created_by TEXT");
+  await pool.query("ALTER TABLE kia_knowledge ADD COLUMN IF NOT EXISTS approved_by TEXT");
+  await pool.query("ALTER TABLE kia_knowledge ADD COLUMN IF NOT EXISTS approved_at TIMESTAMPTZ");
   await pool.query(`
     CREATE TABLE IF NOT EXISTS kia_documents (
       id UUID PRIMARY KEY,
@@ -229,6 +244,17 @@ async function initDatabase(){
     )
   `);
   await pool.query(`
+    CREATE TABLE IF NOT EXISTS kia_notifications (
+      id UUID PRIMARY KEY,
+      staff_id TEXT NOT NULL,
+      type TEXT NOT NULL,
+      title TEXT NOT NULL,
+      message TEXT NOT NULL,
+      read BOOLEAN NOT NULL DEFAULT FALSE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS kia_audit (
       id UUID PRIMARY KEY,
       staff_id TEXT NOT NULL,
@@ -246,7 +272,7 @@ async function loadUsers(){
   for(const u of rows){
     users.set(u.id,{
       id:u.id,name:u.name,email:u.email,phone:u.phone,department:u.department,
-      staffId:u.staff_id,passwordHash:u.password_hash,role:u.role,status:u.status,
+      staffId:u.staff_id,passwordHash:u.password_hash,role:u.role,status:u.status,profilePasswordHash:u.profile_password_hash||null,
       createdAt:u.created_at.toISOString(),approvedAt:u.approved_at?u.approved_at.toISOString():null
     });
   }
@@ -258,19 +284,22 @@ async function loadPersistentState(){
   for(const s of sessionResult.rows){
     sessions.set(s.token,{staffId:s.staff_id,...(s.user_id?{userId:s.user_id}:{}),role:s.role,createdAt:s.created_at.toISOString()});
   }
+  notifications.length=0;
+  const notificationResult=await pool.query('SELECT * FROM kia_notifications ORDER BY created_at DESC LIMIT 1000');
+  for(const n of notificationResult.rows)notifications.push({id:n.id,staffId:n.staff_id,type:n.type,title:n.title,message:n.message,read:n.read,createdAt:n.created_at.toISOString()});
   memory.length=0;
   const memoryResult=await pool.query('SELECT * FROM kia_memory ORDER BY created_at DESC LIMIT 1000');
   for(const m of memoryResult.rows) memory.push({id:m.id,staffId:m.staff_id,scope:m.scope,content:m.content,createdAt:m.created_at.toISOString()});
   knowledge.length=0;
   const knowledgeResult=await pool.query('SELECT * FROM kia_knowledge ORDER BY created_at DESC');
-  for(const k of knowledgeResult.rows) knowledge.push({id:k.id,title:k.title,content:k.content,createdAt:k.created_at.toISOString()});
+  for(const k of knowledgeResult.rows) knowledge.push({id:k.id,title:k.title,content:k.content,status:k.status||'approved',createdBy:k.created_by||null,approvedBy:k.approved_by||null,approvedAt:k.approved_at?k.approved_at.toISOString():null,createdAt:k.created_at.toISOString()});
   const documentResult=await pool.query('SELECT * FROM kia_documents ORDER BY created_at DESC LIMIT 200');
   for(const d of documentResult.rows) knowledge.push({id:'document:'+d.id,type:'document',staffId:d.staff_id,scope:'private',title:d.title,content:d.content,createdAt:d.created_at.toISOString()});
   const masterKnowledge=require('./knowledge/krativeT3chFresh');
   const masterCreatedAt=new Date().toISOString();
   await pool.query(
-    'INSERT INTO kia_knowledge (id,title,content,created_at) VALUES ($1,$2,$3,$4) ON CONFLICT (id) DO UPDATE SET title=EXCLUDED.title,content=EXCLUDED.content',
-    [masterKnowledge.id,masterKnowledge.title,masterKnowledge.content,masterCreatedAt]
+    'INSERT INTO kia_knowledge (id,title,content,status,approved_at,created_at) VALUES ($1,$2,$3,$4,NOW(),$5) ON CONFLICT (id) DO UPDATE SET title=EXCLUDED.title,content=EXCLUDED.content,status=\'approved\',approved_at=NOW()',
+    [masterKnowledge.id,masterKnowledge.title,masterKnowledge.content,'approved',masterCreatedAt]
   );
   const existingMaster=knowledge.find(x=>x.id===masterKnowledge.id);
   if(existingMaster){
@@ -311,14 +340,14 @@ async function saveKnowledge(item){
 async function saveUser(u){
   await pool.query(
     `INSERT INTO kia_users
-      (id,name,email,phone,department,staff_id,password_hash,role,status,created_at,approved_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+      (id,name,email,phone,department,staff_id,password_hash,role,status,created_at,approved_at,profile_password_hash)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
      ON CONFLICT (id) DO UPDATE SET
       name=EXCLUDED.name,email=EXCLUDED.email,phone=EXCLUDED.phone,
       department=EXCLUDED.department,staff_id=EXCLUDED.staff_id,
       password_hash=EXCLUDED.password_hash,role=EXCLUDED.role,
-      status=EXCLUDED.status,approved_at=EXCLUDED.approved_at`,
-    [u.id,u.name,u.email,u.phone,u.department,u.staffId,u.passwordHash,u.role,u.status,u.createdAt,u.approvedAt||null]
+      status=EXCLUDED.status,approved_at=EXCLUDED.approved_at,profile_password_hash=EXCLUDED.profile_password_hash`,
+    [u.id,u.name,u.email,u.phone,u.department,u.staffId,u.passwordHash,u.role,u.status,u.createdAt,u.approvedAt||null,u.profilePasswordHash||null]
   );
 }
 
@@ -376,7 +405,7 @@ function googleApiHeaders(accessToken){return {Authorization:'Bearer '+accessTok
 
 async function createGoogleSession(user,res){
   const t=token();
-  const session={staffId:user.staffId,userId:user.id,role:user.role,createdAt:new Date().toISOString()};
+  const session={staffId:user.staffId,userId:user.id,role:user.role,profileUnlocked:false,createdAt:new Date().toISOString()};
   sessions.set(t,session);
   await saveSession(t,session);
   record(session,'AUTH_LOGIN','google_login',{userId:user.id,provider:'google'});
@@ -474,7 +503,7 @@ app.post('/api/login',async(req,res)=>{
     if(!ACCESS_CODE) return res.status(503).json({error:'KIA access is not configured.'});
     if(typeof accessCode!=='string'||accessCode!==ACCESS_CODE) return res.status(401).json({error:'Invalid administrator credentials.'});
     const t=token();
-    const s={staffId:'admin',role:'admin',createdAt:new Date().toISOString()};
+    const s={staffId:'admin',role:'admin',profileUnlocked:false,createdAt:new Date().toISOString()};
     sessions.set(t,s);
     await saveSession(t,s);
     record(s,'AUTH_LOGIN','admin_login');
@@ -485,7 +514,7 @@ app.post('/api/login',async(req,res)=>{
   if(typeof accessCode!=='string'||accessCode!==ACCESS_CODE) return res.status(401).json({error:'Invalid staff access code.'});
 
   const t=token();
-  const s={staffId:staffId||'staff',role:'staff',createdAt:new Date().toISOString()};
+  const s={staffId:staffId||'staff',role:'staff',profileUnlocked:false,createdAt:new Date().toISOString()};
   sessions.set(t,s);
   await saveSession(t,s);
   record(s,'AUTH_LOGIN','legacy_staff_login');
