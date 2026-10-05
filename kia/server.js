@@ -264,6 +264,30 @@ async function initDatabase(){
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS kia_hin_profiles (
+      id UUID PRIMARY KEY,
+      staff_id TEXT NOT NULL UNIQUE,
+      expertise TEXT NOT NULL DEFAULT '',
+      interests TEXT NOT NULL DEFAULT '',
+      availability TEXT NOT NULL DEFAULT '',
+      bio TEXT NOT NULL DEFAULT '',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS kia_projects (
+      id UUID PRIMARY KEY,
+      staff_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      objective TEXT NOT NULL DEFAULT '',
+      context TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'active',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
 }
 
 async function loadUsers(){
@@ -313,7 +337,7 @@ async function loadPersistentState(){
     knowledge.unshift({id:masterKnowledge.id,title:masterKnowledge.title,content:masterKnowledge.content,createdAt:masterCreatedAt});
   }
   const defaultPlugins=[
-    ['intelligence','KIA Intelligence','Route requests through NOETICA Intelligence and Krative Core.','intelligence'],['memory','KIA Memory','Store and retrieve staff-scoped KIA memory.','productivity'],['knowledge','KIA Knowledge','Read and write the persistent KIA knowledge store.','knowledge'],['audit','KIA Audit','Record and inspect protected KIA activity.','security'],['openai','OpenAI / ChatGPT','Use OpenAI models through the configured OpenAI API connection.','ai'],['claude','Claude','Use Anthropic Claude models through the configured Anthropic API connection.','ai'],['github','GitHub','Read and manage authorized GitHub repositories, issues and pull requests.','development'],['supabase','Supabase','Access authorized Supabase projects and database APIs.','backend'],['gmail','Gmail','Connect approved staff Gmail accounts through Google OAuth.','productivity'],['google-calendar','Google Calendar','Connect approved staff calendars through Google OAuth.','productivity'],['google-drive','Google Drive','Connect approved staff Drive files through Google OAuth.','productivity'],['gemini','Gemini','Use Google Gemini models through the configured Google AI API connection.','ai'],['slack','Slack','Connect authorized Slack workspaces for staff collaboration.','collaboration'],['render','Render','Inspect and operate authorized Render services through the configured Render API connection.','infrastructure']
+    ['intelligence','KIA Intelligence','Route requests through NOETICA Intelligence and Krative Core.','intelligence'],['memory','KIA Memory','Store and retrieve staff-scoped KIA memory.','productivity'],['knowledge','KIA Knowledge','Read and write the persistent KIA knowledge store.','knowledge'],['audit','KIA Audit','Record and inspect protected KIA activity.','security'],['openai','OpenAI / ChatGPT','Use OpenAI models through the configured OpenAI API connection.','ai'],['claude','Claude','Use Anthropic Claude models through the configured Anthropic API connection.','ai'],['github','GitHub','Read and manage authorized GitHub repositories, issues and pull requests.','development'],['supabase','Supabase','Access authorized Supabase projects and database APIs.','backend'],['gmail','Gmail','Connect approved staff Gmail accounts through Google OAuth.','productivity'],['google-calendar','Google Calendar','Connect approved staff calendars through Google OAuth.','productivity'],['google-drive','Google Drive','Connect approved staff Drive files through Google OAuth.','productivity'],['gemini','Gemini','Use Google Gemini models through the configured Google AI API connection.','ai'],['slack','Slack','Connect authorized Slack workspaces for staff collaboration.','collaboration'],['render','Render','Inspect and operate authorized Render services through the configured Render API connection.','infrastructure'],['google-meet','Google Meet','Create and inspect Google Meet spaces for approved staff through Google OAuth.','productivity']
   ];
   for(const [id,name,description,category] of defaultPlugins){
     await pool.query('INSERT INTO kia_plugins (id,name,description,category,enabled) VALUES ($1,$2,$3,$4,TRUE) ON CONFLICT (id) DO NOTHING',[id,name,description,category]);
@@ -1185,7 +1209,7 @@ app.put('/api/knowledge/:id',requireAuth,async(req,res)=>{
 });
 app.get('/api/plugins',requireAuth,async(req,res)=>{
   const {rows}=await pool.query('SELECT id,name,description,category,enabled FROM kia_plugins ORDER BY name');
-  const configured={intelligence:Boolean(NOETICA_API_KEY&&CORE_API_KEY),memory:true,knowledge:true,audit:true,openai:Boolean(process.env.OPENAI_API_KEY),claude:Boolean(process.env.ANTHROPIC_API_KEY),github:Boolean(process.env.GITHUB_TOKEN),supabase:Boolean(process.env.SUPABASE_URL&&process.env.SUPABASE_SERVICE_ROLE_KEY),gmail:Boolean(GOOGLE_CLIENT_ID&&GOOGLE_CLIENT_SECRET),'google-calendar':Boolean(GOOGLE_CLIENT_ID&&GOOGLE_CLIENT_SECRET),'google-drive':Boolean(GOOGLE_CLIENT_ID&&GOOGLE_CLIENT_SECRET),gemini:Boolean(process.env.GEMINI_API_KEY),slack:Boolean(process.env.SLACK_BOT_TOKEN),render:Boolean(process.env.RENDER_API_KEY)};
+  const configured={intelligence:Boolean(NOETICA_API_KEY&&CORE_API_KEY),memory:true,knowledge:true,audit:true,openai:Boolean(process.env.OPENAI_API_KEY),claude:Boolean(process.env.ANTHROPIC_API_KEY),github:Boolean(process.env.GITHUB_TOKEN),supabase:Boolean(process.env.SUPABASE_URL&&process.env.SUPABASE_SERVICE_ROLE_KEY),gmail:Boolean(GOOGLE_CLIENT_ID&&GOOGLE_CLIENT_SECRET),'google-calendar':Boolean(GOOGLE_CLIENT_ID&&GOOGLE_CLIENT_SECRET),'google-drive':Boolean(GOOGLE_CLIENT_ID&&GOOGLE_CLIENT_SECRET),gemini:Boolean(process.env.GEMINI_API_KEY),slack:Boolean(process.env.SLACK_BOT_TOKEN),render:Boolean(process.env.RENDER_API_KEY),'google-meet':Boolean(GOOGLE_CLIENT_ID&&GOOGLE_CLIENT_SECRET)};
   const visibleRows=req.session.role==='admin'||req.session.role==='department_head'?rows:rows.filter(x=>x.id!=='knowledge');
   res.json({items:visibleRows.map(x=>{const ready=Boolean(configured[x.id]);return {...x,status:!x.enabled?'disabled':ready?'active':'not_configured',configured:ready,actions:x.enabled&&ready?['run']:[]};})});
 });
@@ -1250,6 +1274,21 @@ app.post('/api/plugins/:id/run',requireAuth,async(req,res)=>{
       return res.json({success:true,plugin:plugin.id,output:`Google Drive connected. Found ${(d.files||[]).length} recent files.`,files:d.files||[]});
     }catch(error){return res.status(error.statusCode||502).json({error:error.message});}
   }
+  if(plugin.id==='google-meet'){
+    try{
+      const {accessToken}=await getGoogleAccessToken(req.session.staffId);
+      const action=String(req.body?.action||'create').toLowerCase();
+      if(action==='list'){
+        const r=await fetch('https://meet.googleapis.com/v2/spaces',{headers:googleApiHeaders(accessToken)});
+        const d=await r.json().catch(()=>({})); if(!r.ok)return res.status(502).json({error:d.error?.message||'Google Meet API request failed.'});
+        return res.json({success:true,plugin:plugin.id,output:`Google Meet connected. Found ${(d.spaces||[]).length} meeting spaces.`,spaces:d.spaces||[]});
+      }
+      const r=await fetch('https://meet.googleapis.com/v2/spaces',{method:'POST',headers:{...googleApiHeaders(accessToken),'Content-Type':'application/json'},body:JSON.stringify({})});
+      const d=await r.json().catch(()=>({})); if(!r.ok)return res.status(502).json({error:d.error?.message||'Google Meet space creation failed.'});
+      record(req.session,'PLUGIN_ACTION','create_google_meet',{space:d.name||null});
+      return res.json({success:true,plugin:plugin.id,output:d.meetingUri?`Google Meet created: ${d.meetingUri}`:'Google Meet space created.',space:d});
+    }catch(error){return res.status(error.statusCode||502).json({error:error.message});}
+  }
   if(plugin.id==='slack')return res.status(409).json({error:'Slack plugin requires an authorized workspace token.'});
   if(plugin.id==='render')return res.status(409).json({error:'Render plugin requires an authorized Render API key.'});
   return res.status(400).json({error:'Plugin action is not implemented.'});
@@ -1300,6 +1339,64 @@ app.post('/api/google/disconnect',requireAuth,async(req,res)=>{
   await pool.query('DELETE FROM kia_google_connections WHERE staff_id=$1',[req.session.staffId]);
   record(req.session,'CONNECTOR_ACTION','google_disconnected',{connectorId:'google'});
   res.json({success:true});
+});
+app.get('/api/hin',requireAuth,async(req,res)=>{
+  const {rows}=await pool.query(`
+    SELECT h.staff_id,h.expertise,h.interests,h.availability,h.bio,u.name,u.email,u.department,u.role
+    FROM kia_hin_profiles h JOIN kia_users u ON u.staff_id=h.staff_id
+    WHERE u.status='approved' ORDER BY u.name
+  `);
+  res.json({items:rows.map(x=>({...x,staffId:x.staff_id})),me:rows.find(x=>x.staff_id===req.session.staffId)||null});
+});
+app.put('/api/hin',requireAuth,async(req,res)=>{
+  const expertise=String(req.body?.expertise||'').trim().slice(0,2000);
+  const interests=String(req.body?.interests||'').trim().slice(0,2000);
+  const availability=String(req.body?.availability||'').trim().slice(0,500);
+  const bio=String(req.body?.bio||'').trim().slice(0,3000);
+  await pool.query(`
+    INSERT INTO kia_hin_profiles (id,staff_id,expertise,interests,availability,bio,updated_at)
+    VALUES ($1,$2,$3,$4,$5,$6,NOW())
+    ON CONFLICT (staff_id) DO UPDATE SET expertise=EXCLUDED.expertise,interests=EXCLUDED.interests,availability=EXCLUDED.availability,bio=EXCLUDED.bio,updated_at=NOW()
+  `,[crypto.randomUUID(),req.session.staffId,expertise,interests,availability,bio]);
+  record(req.session,'HIN_PROFILE_UPDATE','update_hin_profile',{});
+  res.json({success:true});
+});
+app.get('/api/projects',requireAuth,async(req,res)=>{
+  const {rows}=await pool.query('SELECT * FROM kia_projects WHERE staff_id=$1 ORDER BY updated_at DESC',[req.session.staffId]);
+  res.json({items:rows});
+});
+app.post('/api/projects',requireAuth,async(req,res)=>{
+  const name=String(req.body?.name||'').trim().slice(0,160);
+  const objective=String(req.body?.objective||'').trim().slice(0,3000);
+  const context=String(req.body?.context||'').trim().slice(0,6000);
+  if(!name||!objective)return res.status(400).json({error:'Project name and objective are required.'});
+  const id=crypto.randomUUID();
+  await pool.query('INSERT INTO kia_projects (id,staff_id,name,objective,context,status) VALUES ($1,$2,$3,$4,$5,$6)',[id,req.session.staffId,name,objective,context,'active']);
+  record(req.session,'PROJECT_CREATE','create_project',{projectId:id});
+  res.status(201).json({success:true,project:{id,staffId:req.session.staffId,name,objective,context,status:'active'}});
+});
+app.put('/api/projects/:id',requireAuth,async(req,res)=>{
+  const name=String(req.body?.name||'').trim().slice(0,160);
+  const objective=String(req.body?.objective||'').trim().slice(0,3000);
+  const context=String(req.body?.context||'').trim().slice(0,6000);
+  const status=String(req.body?.status||'active').trim().slice(0,40);
+  if(!name||!objective)return res.status(400).json({error:'Project name and objective are required.'});
+  const {rows}=await pool.query('UPDATE kia_projects SET name=$1,objective=$2,context=$3,status=$4,updated_at=NOW() WHERE id=$5 AND staff_id=$6 RETURNING *',[name,objective,context,status,req.params.id,req.session.staffId]);
+  if(!rows[0])return res.status(404).json({error:'Project not found.'});
+  record(req.session,'PROJECT_UPDATE','update_project',{projectId:req.params.id});
+  res.json({success:true,project:rows[0]});
+});
+app.post('/api/projects/:id/analyze',requireAuth,async(req,res)=>{
+  const {rows}=await pool.query('SELECT * FROM kia_projects WHERE id=$1 AND staff_id=$2',[req.params.id,req.session.staffId]);
+  const p=rows[0]; if(!p)return res.status(404).json({error:'Project not found.'});
+  const input=`Project Intelligence request for "${p.name}". Objective: ${p.objective}. Context: ${p.context||'None provided'}. Analyze the project, identify priorities, risks, next actions and decision points. Return a concise actionable plan.`;
+  try{
+    const result=await runKiaIntelligence(input,req.session);
+    record(req.session,'PROJECT_INTELLIGENCE','analyze_project',{projectId:p.id});
+    res.json(result);
+  }catch(error){
+    res.status(error.statusCode||502).json({error:'Project intelligence request failed.',detail:error.detail||error.message,code:error.code||'PROJECT_INTELLIGENCE_FAILED'});
+  }
 });
 app.get('/api/audit',requireAuth,(req,res)=>{const items=(req.session.role==='admin'?audit:audit.filter(x=>x.staffId===req.session.staffId)).map(x=>{const u=[...users.values()].find(v=>v.staffId===x.staffId);return {...x,user:u?{name:u.name,email:u.email,department:u.department,staffId:u.staffId,role:u.role}:null};});res.json({items});});
 
