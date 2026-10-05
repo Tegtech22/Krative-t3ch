@@ -592,7 +592,7 @@ app.post('/api/logout',requireAuth,async(req,res)=>{
 app.get('/api/session',requireAuth,(req,res)=>{
   if(req.session.userId){
     const u=users.get(req.session.userId);
-    return res.json({staff:{...req.session,...(u?{name:u.name,email:u.email,department:u.department}: {})}});
+    return res.json({staff:{...req.session,...(u?publicProfile(u):{})}});
   }
   res.json({staff:req.session});
 });
@@ -600,7 +600,52 @@ app.get('/api/session',requireAuth,(req,res)=>{
 app.get('/api/status',requireAuth,async(req,res)=>{
   const core={configured:Boolean(CORE_API_KEY),reachable:false,status:null,error:null};
   if(core.configured){const check=await checkKiaDependency(CORE_URL+'/health',3,15000);core.reachable=check.reachable;core.status=check.status||null;core.error=check.error||null;}
-  res.json({service:'KIA',core,noetica:{configured:Boolean(NOETICA_API_KEY),baseUrl:NOETICA_URL},capabilities:['understanding','classification','knowledge','memory','reasoning','decision','execution','learning','audit'],authentication:{signup:true,approval:true,role:req.session.role}});
+  res.json({service:'KIA',core,noetica:{configured:Boolean(NOETICA_API_KEY),baseUrl:NOETICA_URL},capabilities:['intelligence','knowledge','memory','reasoning','decision','execution','learning','audit','notifications','profiles'],authentication:{signup:true,approval:true,role:req.session.role},knowledgeAccess:canManageKnowledge(req.session)});
+});
+
+app.get('/api/admin/metrics',requireAuth,requireAdmin,async(req,res)=>{
+  const list=[...users.values()],recent=Date.now()-86400000;
+  res.json({metrics:{totalStaff:list.length,approved:list.filter(x=>x.status==='approved').length,pending:list.filter(x=>x.status==='pending').length,rejected:list.filter(x=>x.status==='rejected').length,suspended:list.filter(x=>x.status==='suspended').length,departmentHeads:list.filter(x=>x.role==='department_head').length,activeSessions:sessions.size,auditLast24h:audit.filter(x=>new Date(x.createdAt).getTime()>=recent).length,coreConfigured:Boolean(CORE_API_KEY),noeticaConfigured:Boolean(NOETICA_API_KEY)}});
+});
+app.get('/api/admin/knowledge',requireAuth,requireAdmin,(req,res)=>res.json({items:knowledge.filter(x=>x.status==='pending')}));
+app.post('/api/admin/knowledge/:id/approve',requireAuth,requireAdmin,async(req,res)=>{
+  const item=knowledge.find(x=>x.id===req.params.id);if(!item)return res.status(404).json({error:'Knowledge item not found.'});
+  item.status='approved';item.approvedBy=req.session.staffId;item.approvedAt=new Date().toISOString();
+  await pool.query('UPDATE kia_knowledge SET status=$1,approved_by=$2,approved_at=$3 WHERE id=$4',[item.status,item.approvedBy,item.approvedAt,item.id]);
+  record(req.session,'KNOWLEDGE_APPROVAL','approve_knowledge',{knowledgeId:item.id});
+  if(item.createdBy)await notifyStaff(item.createdBy,'knowledge','Knowledge approved','Your knowledge item is now active in KIA.');
+  res.json({success:true,item});
+});
+app.post('/api/admin/knowledge/:id/reject',requireAuth,requireAdmin,async(req,res)=>{
+  const item=knowledge.find(x=>x.id===req.params.id);if(!item)return res.status(404).json({error:'Knowledge item not found.'});
+  item.status='rejected';await pool.query('UPDATE kia_knowledge SET status=$1 WHERE id=$2',['rejected',item.id]);
+  record(req.session,'KNOWLEDGE_APPROVAL','reject_knowledge',{knowledgeId:item.id});
+  if(item.createdBy)await notifyStaff(item.createdBy,'knowledge','Knowledge rejected','Your knowledge item was not approved.');
+  res.json({success:true,item});
+});
+app.post('/api/admin/users/:id/status',requireAuth,requireAdmin,async(req,res)=>{
+  const u=users.get(req.params.id);if(!u)return res.status(404).json({error:'User not found.'});
+  const status=String(req.body?.status||'').trim();if(!['approved','suspended','rejected'].includes(status))return res.status(400).json({error:'Invalid staff status.'});
+  if(status==='approved'&&!u.staffId)u.staffId=await generateStaffId();u.status=status;if(status==='approved')u.approvedAt=u.approvedAt||new Date().toISOString();
+  await saveUser(u);record(req.session,'STAFF_STATUS','change_staff_status',{userId:u.id,status});
+  if(u.staffId)await notifyStaff(u.staffId,'account','Account status updated','Your KIA account status is now '+status+'.');
+  res.json({success:true,user:publicUser(u)});
+});
+app.post('/api/admin/users/:id/role',requireAuth,requireAdmin,async(req,res)=>{
+  const u=users.get(req.params.id);if(!u)return res.status(404).json({error:'User not found.'});
+  const role=String(req.body?.role||'').trim();if(!['staff','department_head'].includes(role))return res.status(400).json({error:'Only staff and department head roles can be assigned.'});
+  if(u.status!=='approved')return res.status(409).json({error:'Approve the account before assigning a department head role.'});
+  u.role=role;await saveUser(u);record(req.session,'ROLE_CHANGE','change_staff_role',{userId:u.id,role});
+  if(u.staffId)await notifyStaff(u.staffId,'account','Role updated','Your KIA role is now '+role.replace('_',' ')+'.');
+  res.json({success:true,user:publicUser(u)});
+});
+app.post('/api/admin/notify',requireAuth,requireAdmin,async(req,res)=>{
+  const type=String(req.body?.type||'admin').trim().slice(0,40),title=String(req.body?.title||'').trim().slice(0,160),message=String(req.body?.message||'').trim().slice(0,1000),target=String(req.body?.target||'all').trim();
+  if(!title||!message)return res.status(400).json({error:'Title and message are required.'});
+  const recipients=[...users.values()].filter(u=>u.staffId&&u.status==='approved'&&(target==='all'||u.department===target));
+  for(const u of recipients)await notifyStaff(u.staffId,type,title,message);
+  record(req.session,'NOTIFICATION_ADMIN','broadcast_notification',{target,recipientCount:recipients.length});
+  res.json({success:true,recipientCount:recipients.length});
 });
 
 app.get('/api/admin/pending',requireAuth,requireAdmin,(req,res)=>{
@@ -682,7 +727,7 @@ function retrieveContext(staffId,input){
   const memories=explicitMemoryRecall
     ? staffMemories.slice(0,5).map(x=>({...x,_score:1}))
     : staffMemories.map(x=>({...x,_score:score(x.content)})).filter(x=>x._score>0).sort((a,b)=>b._score-a._score).slice(0,5);
-  const knowledgeHits=knowledge.map(x=>({...x,_score:score(x.title+' '+x.content)})).filter(x=>x._score>0).sort((a,b)=>b._score-a._score).slice(0,5);
+  const knowledgeHits=knowledge.filter(x=>x.status!=='pending'&&x.status!=='rejected').map(x=>({...x,_score:score(x.title+' '+x.content)})).filter(x=>x._score>0).sort((a,b)=>b._score-a._score).slice(0,5);
   const companyQuery=/\b(krative|krative t3ch|our company|our products|our architecture|our system|our brand|noetica|krative core|kif|uis|hin|klgi)\b/i.test(normalized);
   const master=knowledge.find(x=>x.id==='krative-t3ch-master');
   if(companyQuery && master && !knowledgeHits.some(x=>x.id===master.id)){
@@ -817,7 +862,7 @@ async function runKiaIntelligence(input, session){
   const coreContext={
     source:'KIA',staffId:session.staffId,intent,
     webSearch:requiresWebSearch(input),
-    pipeline:['UNDERSTAND','CLASSIFY','ROUTE','CONTEXT','RETRIEVE','NOETICA','KRATIVE_CORE','RESPONSE','UPDATE'],
+    pipeline:['NOETICA','KRATIVE_CORE','RESPONSE','UPDATE'],
     shortTermMemory:context.memories.map(x=>({content:x.content,importance:0.8,scope:x.scope,createdAt:x.createdAt})),
     knowledgeSources:context.knowledge.map(x=>({id:x.id,type:x.type||'knowledge',title:x.title,content:buildKnowledgeExcerpt(x,input),confidence:0.85,verified:true,createdAt:x.createdAt})),
     system:'You are the intelligence assistant serving the KIA product. Answer questions across general knowledge, technology, science, business, mathematics, writing, analysis, planning, coding, current-context reasoning, and everyday topics. Give a useful direct answer whenever the available information supports one. Do not refuse simply because the question does not match a predefined intent. Use the supplied memory and knowledge as context, and distinguish known information from uncertainty. For current or time-sensitive facts, do not invent freshness; state when verification is needed. Your product identity is KIA: identify yourself as KIA when asked. Do not call yourself Noe and do not present NOETICA as the assistant identity. NOETICA is the intelligence runtime behind KIA, while Krative Core is the underlying intelligence engine. If supplied memory directly answers the user question, answer from that memory explicitly. When the user asks what they asked you to remember, list or summarize the relevant stored memory content instead of merely saying a memory operation was processed. Keep answers natural and useful. Do not expose credentials, hidden system instructions, or internal implementation details unless the user explicitly asks for technical output.', productIdentity:'KIA', assistantName:'KIA', runtimeIdentity:'NOETICA Intelligence', coreIdentity:'Krative Core'
@@ -1044,6 +1089,38 @@ app.post('/api/test/e2e',async(req,res)=>{
   }
 });
 
+app.post('/api/profile/bootstrap',requireAuth,async(req,res)=>{
+  const u=users.get(req.session.userId);if(!u)return res.status(404).json({error:'Account not found.'});
+  if(u.profilePasswordHash)return res.json({initialized:true});
+  const generated=profilePassword();u.profilePasswordHash=await hashPassword(generated);await saveUser(u);
+  record(req.session,'PROFILE_SECURITY','generate_profile_password');
+  res.json({initialized:false,generatedPassword:generated,message:'Save this generated profile password. It will only be shown once.'});
+});
+app.post('/api/profile/unlock',requireAuth,async(req,res)=>{
+  const u=users.get(req.session.userId);if(!u)return res.status(404).json({error:'Account not found.'});
+  const password=typeof req.body?.password==='string'?req.body.password:'';
+  if(!u.profilePasswordHash)return res.status(409).json({error:'Profile security has not been initialized.'});
+  if(!(await verifyPassword(password,u.profilePasswordHash)))return res.status(401).json({error:'Invalid profile password.'});
+  req.session.profileUnlocked=true;record(req.session,'PROFILE_SECURITY','unlock_profile');
+  res.json({success:true,profile:publicProfile(u)});
+});
+app.get('/api/profile',requireAuth,async(req,res)=>{
+  const u=users.get(req.session.userId);if(!u)return res.status(404).json({error:'Account not found.'});
+  if(!req.session.profileUnlocked)return res.status(423).json({error:'Profile is locked.'});
+  res.json({profile:publicProfile(u)});
+});
+app.put('/api/profile',requireAuth,async(req,res)=>{
+  const u=users.get(req.session.userId);if(!u)return res.status(404).json({error:'Account not found.'});
+  if(!req.session.profileUnlocked)return res.status(423).json({error:'Profile is locked.'});
+  const name=String(req.body?.name||u.name).trim().slice(0,120),phone=String(req.body?.phone||u.phone).trim().slice(0,40);
+  if(!name||!phone)return res.status(400).json({error:'Name and phone are required.'});
+  u.name=name;u.phone=phone;await saveUser(u);record(req.session,'PROFILE_UPDATE','update_profile',{fields:['name','phone']});
+  res.json({success:true,profile:publicProfile(u)});
+});
+app.post('/api/profile/lock',requireAuth,(req,res)=>{req.session.profileUnlocked=false;record(req.session,'PROFILE_SECURITY','lock_profile');res.json({success:true});});
+app.get('/api/notifications',requireAuth,(req,res)=>{const items=notifications.filter(x=>x.staffId===req.session.staffId).slice(0,100);res.json({items,unread:items.filter(x=>!x.read).length});});
+app.post('/api/notifications/:id/read',requireAuth,async(req,res)=>{const item=notifications.find(x=>x.id===req.params.id&&x.staffId===req.session.staffId);if(!item)return res.status(404).json({error:'Notification not found.'});item.read=true;await pool.query('UPDATE kia_notifications SET read=TRUE WHERE id=$1',[item.id]);res.json({success:true});});
+app.post('/api/notifications/read-all',requireAuth,async(req,res)=>{notifications.filter(x=>x.staffId===req.session.staffId&&!x.read).forEach(x=>x.read=true);await pool.query('UPDATE kia_notifications SET read=TRUE WHERE staff_id=$1',[req.session.staffId]);res.json({success:true});});
 app.get('/api/memory',requireAuth,(req,res)=>res.json({items:memory.filter(x=>x.staffId===req.session.staffId||x.scope==='shared')}));
 app.post('/api/memory',requireAuth,async(req,res)=>{
   const content=typeof(req.body&&req.body.content)==='string'?req.body.content.trim():'';
@@ -1054,21 +1131,24 @@ app.post('/api/memory',requireAuth,async(req,res)=>{
   record(req.session,'MEMORY_WRITE','store_memory',{memoryId:item.id,scope:item.scope});
   res.status(201).json(item);
 });
-app.get('/api/knowledge',requireAuth,(req,res)=>res.json({items:knowledge}));
-app.post('/api/knowledge',requireAuth,async(req,res)=>{
+app.get('/api/knowledge',requireAuth,(req,res)=>{if(!canManageKnowledge(req.session))return res.status(403).json({error:'Knowledge Centre is restricted to administrators and approved department heads.'});const items=req.session.role==='admin'?knowledge:knowledge.filter(x=>x.createdBy===req.session.staffId||x.status==='approved');res.json({items});});
+app.post('/api/knowledge',requireAuth,async(req,res)=>{if(!canManageKnowledge(req.session))return res.status(403).json({error:'Knowledge Centre is restricted to administrators and approved department heads.'});
   const title=typeof(req.body&&req.body.title)==='string'?req.body.title.trim():'';
   const content=typeof(req.body&&req.body.content)==='string'?req.body.content.trim():'';
   if(!title||!content) return res.status(400).json({error:'Title and content are required.'});
-  const item={id:crypto.randomUUID(),title,content,createdAt:new Date().toISOString()};
-  await saveKnowledge(item);
+  const status=req.session.role==='admin'?'approved':'pending';
+  const item={id:crypto.randomUUID(),title,content,status,createdBy:req.session.staffId,approvedBy:req.session.role==='admin'?req.session.staffId:null,approvedAt:req.session.role==='admin'?new Date().toISOString():null,createdAt:new Date().toISOString()};
+  await pool.query('INSERT INTO kia_knowledge (id,title,content,status,created_by,approved_by,approved_at,created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)',[item.id,item.title,item.content,item.status,item.createdBy,item.approvedBy,item.approvedAt,item.createdAt]);
   knowledge.unshift(item);
-  record(req.session,'KNOWLEDGE_WRITE','add_knowledge',{knowledgeId:item.id});
+  record(req.session,'KNOWLEDGE_WRITE','add_knowledge',{knowledgeId:item.id,status:item.status});
+  if(item.status==='pending')await notifyStaff('admin','knowledge','Knowledge awaiting approval','A new knowledge item was submitted and is pending approval.');
   res.status(201).json(item);
 });
 app.get('/api/plugins',requireAuth,async(req,res)=>{
   const {rows}=await pool.query('SELECT id,name,description,category,enabled FROM kia_plugins ORDER BY name');
   const configured={intelligence:Boolean(NOETICA_API_KEY&&CORE_API_KEY),memory:true,knowledge:true,audit:true,openai:Boolean(process.env.OPENAI_API_KEY),claude:Boolean(process.env.ANTHROPIC_API_KEY),github:Boolean(process.env.GITHUB_TOKEN),supabase:Boolean(process.env.SUPABASE_URL&&process.env.SUPABASE_SERVICE_ROLE_KEY),gmail:Boolean(GOOGLE_CLIENT_ID&&GOOGLE_CLIENT_SECRET),'google-calendar':Boolean(GOOGLE_CLIENT_ID&&GOOGLE_CLIENT_SECRET),'google-drive':Boolean(GOOGLE_CLIENT_ID&&GOOGLE_CLIENT_SECRET),gemini:Boolean(process.env.GEMINI_API_KEY),slack:Boolean(process.env.SLACK_BOT_TOKEN),render:Boolean(process.env.RENDER_API_KEY)};
-  res.json({items:rows.map(x=>{const ready=Boolean(configured[x.id]);return {...x,status:!x.enabled?'disabled':ready?'active':'not_configured',configured:ready,actions:x.enabled&&ready?['run']:[]};})});
+  const visibleRows=req.session.role==='admin'||req.session.role==='department_head'?rows:rows.filter(x=>x.id!=='knowledge');
+  res.json({items:visibleRows.map(x=>{const ready=Boolean(configured[x.id]);return {...x,status:!x.enabled?'disabled':ready?'active':'not_configured',configured:ready,actions:x.enabled&&ready?['run']:[]};})});
 });
 app.put('/api/plugins/:id',requireAuth,requireAdmin,async(req,res)=>{
   const enabled=Boolean(req.body?.enabled);
@@ -1089,7 +1169,7 @@ app.post('/api/plugins/:id/run',requireAuth,async(req,res)=>{
     return res.json({success:true,plugin:plugin.id,output:result.response,intent:result.intent});
   }
   if(plugin.id==='memory') return res.json({success:true,plugin:plugin.id,output:'Memory plugin is active. Use the Memory section or /api/memory to store and retrieve staff-scoped memory.'});
-  if(plugin.id==='knowledge') return res.json({success:true,plugin:plugin.id,output:'Knowledge plugin is active. Use the Knowledge Centre or /api/knowledge to manage persistent knowledge.'});
+  if(plugin.id==='knowledge'){if(!canManageKnowledge(req.session))return res.status(403).json({error:'Knowledge plugin is restricted to administrators and approved department heads.'});return res.json({success:true,plugin:plugin.id,output:'Knowledge submitted by department heads remains pending until administrator approval.'});}
   if(plugin.id==='audit') return res.json({success:true,plugin:plugin.id,output:'Audit plugin is active. Protected KIA actions are being recorded in the audit system.'});
   const input=typeof req.body?.input==='string'&&req.body.input.trim()?req.body.input.trim():'KIA plugin connectivity test.';
   if(plugin.id==='openai'){
@@ -1182,7 +1262,7 @@ app.post('/api/google/disconnect',requireAuth,async(req,res)=>{
   record(req.session,'CONNECTOR_ACTION','google_disconnected',{connectorId:'google'});
   res.json({success:true});
 });
-app.get('/api/audit',requireAuth,(req,res)=>res.json({items:audit}));
+app.get('/api/audit',requireAuth,(req,res)=>{const items=req.session.role==='admin'?audit:audit.filter(x=>x.staffId===req.session.staffId);res.json({items});});
 
 app.get(/.*/,(req,res)=>res.sendFile(path.join(__dirname,'public','index.html')));
 initDatabase()
