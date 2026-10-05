@@ -981,6 +981,23 @@ async function runKiaIntelligence(input, session){
   return {success:true,response,intent,context:{memoryMatches:context.memories.length,knowledgeMatches:context.knowledge.length},noetica:data};
 }
 
+app.post('/api/test/e2e',async(req,res)=>{
+  if(!E2E_TEST_TOKEN) return res.status(503).json({error:'KIA E2E test token is not configured.'});
+  const supplied=String(req.headers['x-kia-e2e-token']||'');
+  if(!supplied || !crypto.timingSafeEqual(Buffer.from(supplied),Buffer.from(E2E_TEST_TOKEN))) return res.status(401).json({error:'Unauthorized E2E test request.'});
+  const session={staffId:'e2e-test',role:'test',createdAt:new Date().toISOString()};
+  try{
+    const result=await runKiaIntelligence('KIA live integration test: explain in one sentence what Krative Core does.',session);
+    const noeticaResult=result?.noetica?.result;
+    const coreState=noeticaResult?.core?.state;
+    const passed=Boolean(result?.success&&result?.response&&noeticaResult?.status==='completed'&&coreState?.status==='completed'&&coreState?.stage==='EXECUTION'&&coreState?.kif?.status==='fused');
+    res.status(passed?200:502).json({passed,success:result?.success===true,response:result?.response||null,noeticaStatus:noeticaResult?.status||null,coreStatus:coreState?.status||null,coreStage:coreState?.stage||null,kifStatus:coreState?.kif?.status||null,kifSourceCount:coreState?.kif?.sourceCount||null});
+  }catch(error){
+    console.error('KIA E2E test failed:',error);
+    res.status(error.statusCode||502).json({passed:false,error:error.message,detail:error.detail||null,code:error.code||'KIA_E2E_FAILED',dependency:error.dependency||null,stage:error.stage||null});
+  }
+});
+
 async function runConfiguredPluginSmokeTests(){
   const input='KIA plugin smoke test: reply with OK.';
   const tests=[];
