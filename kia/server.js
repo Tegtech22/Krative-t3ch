@@ -571,6 +571,7 @@ app.post('/api/account-login',async(req,res)=>{
     return res.status(401).json({error:'Invalid email or password.'});
   if(user.status==='pending') return res.status(403).json({error:'Your account is pending administrator approval.'});
   if(user.status==='rejected') return res.status(403).json({error:'Your registration was not approved.'});
+  if(user.status==='suspended') return res.status(403).json({error:'Your KIA account is suspended. Please contact an administrator.'});
   if(!user.staffId) return res.status(403).json({error:'Your account is approved, but your staff ID has not been issued yet. Please contact an administrator.'});
 
   const t=token();
