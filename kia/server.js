@@ -290,6 +290,10 @@ async function loadPersistentState(){
   memory.length=0;
   const memoryResult=await pool.query('SELECT * FROM kia_memory ORDER BY created_at DESC LIMIT 1000');
   for(const m of memoryResult.rows) memory.push({id:m.id,staffId:m.staff_id,scope:m.scope,content:m.content,createdAt:m.created_at.toISOString()});
+  if(process.env.KIA_KNOWLEDGE_RESET_ONCE==='true'){
+    await pool.query('DELETE FROM kia_knowledge');
+    console.log('KIA knowledge root reset: all existing root knowledge cleared.');
+  }
   knowledge.length=0;
   const knowledgeResult=await pool.query('SELECT * FROM kia_knowledge ORDER BY created_at DESC');
   for(const k of knowledgeResult.rows) knowledge.push({id:k.id,title:k.title,content:k.content,status:k.status||'approved',createdBy:k.created_by||null,approvedBy:k.approved_by||null,approvedAt:k.approved_at?k.approved_at.toISOString():null,createdAt:k.created_at.toISOString()});
@@ -729,7 +733,7 @@ function retrieveContext(staffId,input){
   const memories=explicitMemoryRecall
     ? staffMemories.slice(0,5).map(x=>({...x,_score:1}))
     : staffMemories.map(x=>({...x,_score:score(x.content)})).filter(x=>x._score>0).sort((a,b)=>b._score-a._score).slice(0,5);
-  const knowledgeHits=knowledge.filter(x=>x.status!=='pending'&&x.status!=='rejected').map(x=>({...x,_score:score(x.title+' '+x.content)})).filter(x=>x._score>0).sort((a,b)=>b._score-a._score).slice(0,5);
+  const knowledgeHits=knowledge.filter(x=>x.type==='document'||x.status==='approved').map(x=>({...x,_score:score(x.title+' '+x.content)})).filter(x=>x._score>0).sort((a,b)=>b._score-a._score).slice(0,5);
   const companyQuery=/\b(krative|krative t3ch|our company|our products|our architecture|our system|our brand|noetica|krative core|kif|uis|hin|klgi)\b/i.test(normalized);
   const master=knowledge.find(x=>x.id==='krative-t3ch-master');
   if(companyQuery && master && !knowledgeHits.some(x=>x.id===master.id)){
@@ -1146,6 +1150,23 @@ app.post('/api/knowledge',requireAuth,async(req,res)=>{if(!canManageKnowledge(re
   if(item.status==='pending')await notifyStaff('admin','knowledge','Knowledge awaiting approval','A new knowledge item was submitted and is pending approval.');
   res.status(201).json(item);
 });
+app.put('/api/knowledge/:id',requireAuth,async(req,res)=>{
+  if(!canManageKnowledge(req.session))return res.status(403).json({error:'Knowledge Centre is restricted to administrators and approved department heads.'});
+  const item=knowledge.find(x=>x.id===req.params.id);
+  if(!item||item.type==='document')return res.status(404).json({error:'Knowledge item not found.'});
+  if(req.session.role!=='admin'&&item.createdBy!==req.session.staffId)return res.status(403).json({error:'You can only edit knowledge you submitted.'});
+  const title=typeof req.body?.title==='string'?req.body.title.trim():'';
+  const content=typeof req.body?.content==='string'?req.body.content.trim():'';
+  if(!title||!content)return res.status(400).json({error:'Title and content are required.'});
+  const status=req.session.role==='admin'?'approved':'pending';
+  item.title=title;item.content=content;item.status=status;
+  item.approvedBy=status==='approved'?req.session.staffId:null;
+  item.approvedAt=status==='approved'?new Date().toISOString():null;
+  await pool.query('UPDATE kia_knowledge SET title=$1,content=$2,status=$3,approved_by=$4,approved_at=$5 WHERE id=$6',[item.title,item.content,item.status,item.approvedBy,item.approvedAt,item.id]);
+  record(req.session,'KNOWLEDGE_WRITE','edit_knowledge',{knowledgeId:item.id,status:item.status});
+  if(status==='pending'&&item.createdBy)await notifyStaff('admin','knowledge','Knowledge awaiting approval','An edited knowledge item is pending approval.');
+  res.json({success:true,item});
+});
 app.get('/api/plugins',requireAuth,async(req,res)=>{
   const {rows}=await pool.query('SELECT id,name,description,category,enabled FROM kia_plugins ORDER BY name');
   const configured={intelligence:Boolean(NOETICA_API_KEY&&CORE_API_KEY),memory:true,knowledge:true,audit:true,openai:Boolean(process.env.OPENAI_API_KEY),claude:Boolean(process.env.ANTHROPIC_API_KEY),github:Boolean(process.env.GITHUB_TOKEN),supabase:Boolean(process.env.SUPABASE_URL&&process.env.SUPABASE_SERVICE_ROLE_KEY),gmail:Boolean(GOOGLE_CLIENT_ID&&GOOGLE_CLIENT_SECRET),'google-calendar':Boolean(GOOGLE_CLIENT_ID&&GOOGLE_CLIENT_SECRET),'google-drive':Boolean(GOOGLE_CLIENT_ID&&GOOGLE_CLIENT_SECRET),gemini:Boolean(process.env.GEMINI_API_KEY),slack:Boolean(process.env.SLACK_BOT_TOKEN),render:Boolean(process.env.RENDER_API_KEY)};
@@ -1264,7 +1285,7 @@ app.post('/api/google/disconnect',requireAuth,async(req,res)=>{
   record(req.session,'CONNECTOR_ACTION','google_disconnected',{connectorId:'google'});
   res.json({success:true});
 });
-app.get('/api/audit',requireAuth,(req,res)=>{const items=req.session.role==='admin'?audit:audit.filter(x=>x.staffId===req.session.staffId);res.json({items});});
+app.get('/api/audit',requireAuth,(req,res)=>{const items=(req.session.role==='admin'?audit:audit.filter(x=>x.staffId===req.session.staffId)).map(x=>{const u=[...users.values()].find(v=>v.staffId===x.staffId);return {...x,user:u?{name:u.name,email:u.email,department:u.department,staffId:u.staffId,role:u.role}:null};});res.json({items});});
 
 app.get(/.*/,(req,res)=>res.sendFile(path.join(__dirname,'public','index.html')));
 initDatabase()
