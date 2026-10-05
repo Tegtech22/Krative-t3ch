@@ -639,6 +639,7 @@ app.post('/api/admin/users/:id/role',requireAuth,requireAdmin,async(req,res)=>{
   if(u.staffId)await notifyStaff(u.staffId,'account','Role updated','Your KIA role is now '+role.replace('_',' ')+'.');
   res.json({success:true,user:publicUser(u)});
 });
+app.post('/api/admin/users/:id/reset-profile-password',requireAuth,requireAdmin,async(req,res)=>{const u=users.get(req.params.id);if(!u)return res.status(404).json({error:'User not found.'});const generated=profilePassword();u.profilePasswordHash=await hashPassword(generated);await saveUser(u);record(req.session,'PROFILE_SECURITY','admin_reset_profile_password',{userId:u.id});if(u.staffId)await notifyStaff(u.staffId,'security','Profile password reset','An administrator generated a new profile password for your account.');res.json({success:true,generatedPassword:generated});});
 app.post('/api/admin/notify',requireAuth,requireAdmin,async(req,res)=>{
   const type=String(req.body?.type||'admin').trim().slice(0,40),title=String(req.body?.title||'').trim().slice(0,160),message=String(req.body?.message||'').trim().slice(0,1000),target=String(req.body?.target||'all').trim();
   if(!title||!message)return res.status(400).json({error:'Title and message are required.'});
