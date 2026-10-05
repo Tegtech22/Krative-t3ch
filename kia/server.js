@@ -1303,6 +1303,210 @@ app.post('/api/google/disconnect',requireAuth,async(req,res)=>{
 });
 app.get('/api/audit',requireAuth,(req,res)=>{const items=(req.session.role==='admin'?audit:audit.filter(x=>x.staffId===req.session.staffId)).map(x=>{const u=[...users.values()].find(v=>v.staffId===x.staffId);return {...x,user:u?{name:u.name,email:u.email,department:u.department,staffId:u.staffId,role:u.role}:null};});res.json({items});});
 
+
+
+/*
+ * KIA MCP interface
+ * Streamable HTTP JSON-RPC endpoint for authorized KIA tooling.
+ * Read/diagnostic tools only in v0.1.0; mutations remain behind KIA's normal
+ * authenticated application APIs until explicit MCP authorization is added.
+ */
+const KIA_MCP_API_KEY = process.env.KIA_MCP_API_KEY || '';
+const KIA_MCP_PROTOCOL_VERSION = '2026-07-28';
+
+function mcpJsonRpc(id, result) {
+  return { jsonrpc: '2.0', id, result };
+}
+function mcpError(id, code, message, data) {
+  return { jsonrpc: '2.0', id, error: { code, message, ...(data ? { data } : {}) } };
+}
+function mcpAuthorized(req) {
+  if (!KIA_MCP_API_KEY) return false;
+  const auth = String(req.headers.authorization || '');
+  return auth === 'Bearer ' + KIA_MCP_API_KEY;
+}
+function mcpTool(name, description, inputSchema) {
+  return { name, description, inputSchema };
+}
+function mcpTools() {
+  return [
+    mcpTool(
+      'kia_health',
+      'Return KIA service configuration and dependency health for Krative Core and NOETICA.',
+      { type: 'object', properties: {}, additionalProperties: false }
+    ),
+    mcpTool(
+      'kia_intelligence',
+      'Send an intelligence request through KIA to NOETICA and Krative Core. KIA remains the orchestration layer; it does not create a separate intelligence engine.',
+      {
+        type: 'object',
+        properties: {
+          input: { type: 'string', minLength: 1, description: 'The user request to process through KIA intelligence.' },
+          staff_id: { type: 'string', description: 'Optional staff identifier for audit attribution.' }
+        },
+        required: ['input'],
+        additionalProperties: false
+      }
+    ),
+    mcpTool(
+      'kia_connectors',
+      'Return the current live connector status for KIA, including Krative Core, NOETICA and configured integrations.',
+      { type: 'object', properties: {}, additionalProperties: false }
+    ),
+    mcpTool(
+      'kia_knowledge',
+      'Return approved KIA knowledge available to the authenticated MCP caller. Pending or rejected knowledge is never returned.',
+      {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'Optional text filter.' }
+        },
+        additionalProperties: false
+      }
+    ),
+    mcpTool(
+      'kia_audit',
+      'Return KIA audit activity. The MCP interface exposes only recent activity and never exposes secrets or access tokens.',
+      {
+        type: 'object',
+        properties: { limit: { type: 'integer', minimum: 1, maximum: 100 } },
+        additionalProperties: false
+      }
+    )
+  ];
+}
+
+async function mcpHealth() {
+  const core = await checkKiaDependency(CORE_URL + '/health', 3, 12000);
+  const noetica = await checkKiaDependency(NOETICA_URL + '/health', 3, 12000);
+  return {
+    service: 'kia',
+    status: core.reachable && noetica.reachable ? 'ok' : 'degraded',
+    core: { configured: Boolean(CORE_API_KEY), baseUrl: CORE_URL, reachable: core.reachable, error: core.error || null },
+    noetica: { configured: Boolean(NOETICA_API_KEY), baseUrl: NOETICA_URL, reachable: noetica.reachable, error: noetica.error || null },
+    timestamp: new Date().toISOString()
+  };
+}
+
+async function mcpCallTool(name, args) {
+  if (name === 'kia_health') return await mcpHealth();
+
+  if (name === 'kia_intelligence') {
+    const input = typeof args?.input === 'string' ? args.input.trim() : '';
+    if (!input) throw new Error('input is required.');
+    const session = {
+      staffId: typeof args?.staff_id === 'string' && args.staff_id.trim() ? args.staff_id.trim() : 'mcp',
+      role: 'staff',
+      createdAt: new Date().toISOString()
+    };
+    const result = await runKiaIntelligence(input, session);
+    return {
+      success: Boolean(result?.success),
+      response: result?.response || null,
+      intent: result?.intent || null,
+      pipeline: {
+        noeticaStatus: result?.noetica?.result?.status || null,
+        coreStatus: result?.noetica?.result?.core?.state?.status || null,
+        coreStage: result?.noetica?.result?.core?.state?.stage || null,
+        kifStatus: result?.noetica?.result?.core?.state?.kif?.status || null
+      }
+    };
+  }
+
+  if (name === 'kia_connectors') {
+    return await mcpHealth();
+  }
+
+  if (name === 'kia_knowledge') {
+    const query = typeof args?.query === 'string' ? args.query.trim().toLowerCase() : '';
+    const approved = knowledge
+      .filter(item => item.status === 'approved' && item.type !== 'document')
+      .filter(item => !query || String(item.title || '').toLowerCase().includes(query) || String(item.content || '').toLowerCase().includes(query))
+      .map(item => ({
+        id: item.id,
+        title: item.title,
+        content: item.content,
+        status: item.status,
+        createdAt: item.createdAt
+      }));
+    return { items: approved };
+  }
+
+  if (name === 'kia_audit') {
+    const limit = Math.min(100, Math.max(1, Number(args?.limit || 25)));
+    return {
+      items: audit.slice(0, limit).map(item => ({
+        id: item.id,
+        staffId: item.staffId,
+        eventType: item.eventType,
+        action: item.action,
+        metadata: item.metadata,
+        createdAt: item.createdAt
+      }))
+    };
+  }
+
+  throw new Error('Unknown KIA MCP tool: ' + name);
+}
+
+app.post('/mcp', async (req, res) => {
+  if (!mcpAuthorized(req)) return res.status(401).json(mcpError(null, -32001, 'Unauthorized KIA MCP request.'));
+  const requestedVersion = String(req.headers['mcp-protocol-version'] || req.body?._meta?.['io.modelcontextprotocol/protocolVersion'] || '');
+  if (requestedVersion && requestedVersion !== KIA_MCP_PROTOCOL_VERSION) {
+    return res.status(400).json(mcpError(req.body?.id ?? null, -32002, 'Unsupported MCP protocol version.', { supported: [KIA_MCP_PROTOCOL_VERSION] }));
+  }
+
+  const message = req.body;
+  if (!message || Array.isArray(message) || message.jsonrpc !== '2.0') {
+    return res.status(400).json(mcpError(message?.id ?? null, -32600, 'Invalid JSON-RPC request.'));
+  }
+
+  const id = message.id ?? null;
+  try {
+    if (message.method === 'initialize') {
+      return res.json(mcpJsonRpc(id, {
+        protocolVersion: KIA_MCP_PROTOCOL_VERSION,
+        capabilities: { tools: { listChanged: false } },
+        serverInfo: { name: 'krative-kia', version: '0.1.0' }
+      }));
+    }
+
+    if (message.method === 'tools/list') {
+      return res.json(mcpJsonRpc(id, {
+        tools: mcpTools(),
+        _meta: { ttlMs: 30000, cacheScope: 'private' }
+      }));
+    }
+
+    if (message.method === 'tools/call') {
+      const name = message.params?.name;
+      const args = message.params?.arguments || {};
+      const result = await mcpCallTool(name, args);
+      return res.json(mcpJsonRpc(id, {
+        content: [{ type: 'text', text: JSON.stringify(result) }],
+        structuredContent: result,
+        isError: false,
+        _meta: { serverInfo: { name: 'krative-kia', version: '0.1.0' } }
+      }));
+    }
+
+    if (message.method === 'ping') return res.json(mcpJsonRpc(id, {}));
+
+    return res.status(404).json(mcpError(id, -32601, 'Method not found.'));
+  } catch (error) {
+    console.error('KIA MCP request failed:', error);
+    return res.status(200).json(mcpJsonRpc(id, {
+      content: [{ type: 'text', text: JSON.stringify({ error: error.message }) }],
+      isError: true
+    }));
+  }
+});
+
+app.get('/mcp', (req, res) => {
+  if (!mcpAuthorized(req)) return res.status(401).json({ error: 'Unauthorized KIA MCP request.' });
+  res.status(405).json({ error: 'KIA MCP uses POST /mcp.' });
+});
+
 app.get(/.*/,(req,res)=>res.sendFile(path.join(__dirname,'public','index.html')));
 initDatabase()
   .then(loadUsers)
