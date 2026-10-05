@@ -451,7 +451,8 @@ app.get('/api/auth/google',(req,res)=>{
     redirect_uri:GOOGLE_REDIRECT_URI,
     response_type:'code',
     scope:'openid email profile',
-    access_type:'online',
+    access_type:'offline',
+    include_granted_scopes:'true',
     prompt:'select_account',
     state
   });
