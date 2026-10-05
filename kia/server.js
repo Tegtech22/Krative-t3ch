@@ -574,7 +574,7 @@ app.post('/api/account-login',async(req,res)=>{
   if(!user.staffId) return res.status(403).json({error:'Your account is approved, but your staff ID has not been issued yet. Please contact an administrator.'});
 
   const t=token();
-  const s={staffId:user.staffId,userId:user.id,role:user.role,createdAt:new Date().toISOString()};
+  const s={staffId:user.staffId,userId:user.id,role:user.role,profileUnlocked:false,createdAt:new Date().toISOString()};
   sessions.set(t,s);
   await saveSession(t,s);
   record(s,'AUTH_LOGIN','account_login',{userId:user.id});
