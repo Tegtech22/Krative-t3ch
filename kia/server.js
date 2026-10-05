@@ -553,7 +553,16 @@ app.post('/api/signup',async(req,res)=>{
       status:'pending',
       createdAt:new Date().toISOString()
     };
-    await saveUser(user);
+    try{
+      await saveUser(user);
+    }catch(error){
+      if(error?.code==='23505'){
+        const existing=[...users.values()].find(u=>u.email===email);
+        if(existing) return res.status(409).json({error:'An account with that email already exists.'});
+      }
+      console.error('KIA signup persistence failed:',error.message);
+      return res.status(500).json({error:'Unable to create the account. Please try again.'});
+    }
     users.set(user.id,user);
     record({staffId:'public-signup'},'AUTH_SIGNUP','staff_signup',{userId:user.id,email,department});
     res.status(201).json({
@@ -562,28 +571,35 @@ app.post('/api/signup',async(req,res)=>{
       user:publicUser(user)
     });
   }catch(error){
-    res.status(500).json({error:'Unable to create the account.'});
+    console.error('KIA signup failed:',error.message);
+    res.status(500).json({error:'Unable to create the account. Please try again.'});
   }
 });
 
 app.post('/api/account-login',async(req,res)=>{
-  const email=String(req.body?.email||'').trim().toLowerCase();
-  const password=typeof req.body?.password==='string'?req.body.password:'';
-  const user=[...users.values()].find(u=>u.email===email);
+  try{
+    const email=String(req.body?.email||'').trim().toLowerCase();
+    const password=typeof req.body?.password==='string'?req.body.password:'';
+    if(!email||!password) return res.status(400).json({error:'Email and password are required.'});
+    const user=[...users.values()].find(u=>u.email===email);
 
-  if(!user||!(await verifyPassword(password,user.passwordHash)))
-    return res.status(401).json({error:'Invalid email or password.'});
-  if(user.status==='pending') return res.status(403).json({error:'Your account is pending administrator approval.'});
-  if(user.status==='rejected') return res.status(403).json({error:'Your registration was not approved.'});
-  if(user.status==='suspended') return res.status(403).json({error:'Your KIA account is suspended. Please contact an administrator.'});
-  if(!user.staffId) return res.status(403).json({error:'Your account is approved, but your staff ID has not been issued yet. Please contact an administrator.'});
+    if(!user||!(await verifyPassword(password,user.passwordHash)))
+      return res.status(401).json({error:'Invalid email or password.'});
+    if(user.status==='pending') return res.status(403).json({error:'Your account is pending administrator approval. You can log in after an administrator approves it.'});
+    if(user.status==='rejected') return res.status(403).json({error:'Your registration was not approved.'});
+    if(user.status==='suspended') return res.status(403).json({error:'Your KIA account is suspended. Please contact an administrator.'});
+    if(!user.staffId) return res.status(403).json({error:'Your account is approved, but your staff ID has not been issued yet. Please contact an administrator.'});
 
-  const t=token();
-  const s={staffId:user.staffId,userId:user.id,role:user.role,profileUnlocked:false,createdAt:new Date().toISOString()};
-  sessions.set(t,s);
-  await saveSession(t,s);
-  record(s,'AUTH_LOGIN','account_login',{userId:user.id});
-  res.json({token:t,staff:{...s,name:user.name,email:user.email,department:user.department}});
+    const t=token();
+    const s={staffId:user.staffId,userId:user.id,role:user.role,profileUnlocked:false,createdAt:new Date().toISOString()};
+    sessions.set(t,s);
+    await saveSession(t,s);
+    record(s,'AUTH_LOGIN','account_login',{userId:user.id});
+    res.json({token:t,staff:{...s,name:user.name,email:user.email,department:user.department}});
+  }catch(error){
+    console.error('KIA account login failed:',error.message);
+    res.status(500).json({error:'Unable to complete login. Please try again.'});
+  }
 });
 
 app.post('/api/logout',requireAuth,async(req,res)=>{
